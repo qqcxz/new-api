@@ -10,3 +10,9 @@ docs
 /web/node_modules
 /web/dist
 !THIRD-PARTY-LICENSES.md
+
+# Never send private runtime settings or deployment backups to the image builder.
+.env
+.env.*
+/fork/deploy.env
+/fork/backups/

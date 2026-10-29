@@ -31,3 +31,10 @@ jobs:
           node-version: '22'
       - name: Test fork maintenance commands
         run: node --test fork/maintain.test.mjs
+      - name: Validate custom source deployment configuration
+        env:
+          POSTGRES_PASSWORD: config-test-postgres
+          REDIS_PASSWORD: config-test-redis
+          SESSION_SECRET: config-test-session
+          CRYPTO_SECRET: config-test-crypto
+        run: docker compose --env-file fork/deploy.env.example -f fork/compose.production.yml config --quiet

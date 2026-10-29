@@ -1,0 +1,81 @@
+# Run from the repository root with:
+# docker compose --env-file fork/deploy.env -f fork/compose.production.yml up -d --build
+# This is a NEW, independent installation. It does not migrate an existing database.
+name: new-api-custom
+
+services:
+  new-api:
+    image: new-api-custom:${NEW_API_TAG:-local}
+    pull_policy: never
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ['--log-dir', '/app/logs']
+    ports:
+      - '${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3001}:3000'
+    volumes:
+      - app_data:/data
+      - app_logs:/app/logs
+    environment:
+      SQL_DSN: 'postgresql://newapi:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in fork/deploy.env}@postgres:5432/newapi?sslmode=disable'
+      REDIS_CONN_STRING: 'redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in fork/deploy.env}@redis:6379/0'
+      SESSION_SECRET: '${SESSION_SECRET:?Set SESSION_SECRET in fork/deploy.env}'
+      CRYPTO_SECRET: '${CRYPTO_SECRET:?Set CRYPTO_SECRET in fork/deploy.env}'
+      SESSION_COOKIE_SECURE: '${SESSION_COOKIE_SECURE:-false}'
+      SESSION_COOKIE_TRUSTED_URL: '${SESSION_COOKIE_TRUSTED_URL:-}'
+      TZ: Asia/Shanghai
+      NODE_NAME: new-api-custom-1
+      DEFAULT_LANGUAGE: zh-CN
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O - http://127.0.0.1:3000/api/status | grep -Eq ''"success"[[:space:]]*:[[:space:]]*true''']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: newapi
+      POSTGRES_USER: newapi
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in fork/deploy.env}'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: '${REDIS_PASSWORD:?Set REDIS_PASSWORD in fork/deploy.env}'
+    command: ['redis-server', '--appendonly', 'yes', '--requirepass', '${REDIS_PASSWORD:?Set REDIS_PASSWORD in fork/deploy.env}']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  app_data:
+  app_logs:
+  postgres_data:
+  redis_data:

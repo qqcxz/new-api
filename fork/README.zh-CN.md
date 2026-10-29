@@ -1,5 +1,7 @@
 # Fork 维护指南：固定在一个分支开发
 
+服务器部署与更新请阅读 [二开版本部署指南](DEPLOY.zh-CN.md)，使用 `fork/compose.production.yml` 从本分支源码构建，而不是直接拉取官方镜像。
+
 ## 日常只使用一个分支
 
 所有自定义功能和修复都放在 **`feat/custom-development`**。不需要每次找 AI Agent 都创建分支，也不要求每个功能完成后再合入 `dev`。
