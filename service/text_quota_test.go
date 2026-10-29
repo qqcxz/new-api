@@ -102,6 +102,9 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 	const imageExpression = `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`
 	imageUsage := &dto.Usage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100,
 		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 300, ImageTokens: 600, CachedTokensDetails: &dto.CachedTokenDetails{ImageTokens: common.GetPointer(200)}}}
+	estimatedNativeUsage := &dto.Usage{PromptTokens: 100, TotalTokens: 100}
+	estimatedNativeUsage.BillingUsage = dto.NewEstimatedGeminiChatBillingUsage(estimatedNativeUsage)
+	nativeReasoningUsage := &dto.Usage{BillingUsage: dto.NewEstimatedGeminiChatBillingUsage(&dto.Usage{PromptTokens: 100, CompletionTokens: 5, TotalTokens: 105, CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 5}})}
 	operation_setting.SetToolPriceForTest("fixed_billing_tool", 4)
 	t.Cleanup(func() { operation_setting.DeleteToolPriceForTest("fixed_billing_tool") })
 	for index, tc := range []struct {
@@ -110,12 +113,31 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 		usage                                     *dto.Usage
 		audio, stream, refund, insufficient, tool bool
 		realtime, reserveInsufficient             bool
+		failed, localEstimate, clientGone         bool
+		outputObserved, reportedUsage             bool
 		wallet, outboundImages, retryReservation  int
 		groupRatio                                float64
 		want                                      int
 		unit                                      billingexpr.BillingUnit
 		requestedImages, actualImages             int
 	}{
+		{name: "failed audio stream without usage refunds its fixed fee", expression: flat, audio: true, stream: true, failed: true, unit: billingexpr.BillingUnitRequest},
+		{name: "failed audio stream does not charge estimated input", expression: `tier("tokens", p * 2 + c * 2)`, estimate: 100, audio: true, stream: true, failed: true, localEstimate: true, usage: &dto.Usage{PromptTokens: 100, TotalTokens: 100}, unit: billingexpr.BillingUnitToken},
+		{name: "failed audio stream keeps reported audio work", expression: flat, audio: true, stream: true, failed: true, localEstimate: true, usage: &dto.Usage{PromptTokens: 100, TotalTokens: 100, PromptTokensDetails: dto.InputTokenDetails{AudioTokens: 100}}, want: 5000, unit: billingexpr.BillingUnitRequest},
+		{name: "failed audio stream keeps hidden reasoning work", expression: flat, audio: true, stream: true, failed: true, localEstimate: true, usage: &dto.Usage{CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 5}}, want: 5000, unit: billingexpr.BillingUnitRequest},
+		{name: "purely estimated native input cannot charge a failed stream", expression: flat, stream: true, failed: true, localEstimate: true, usage: estimatedNativeUsage, unit: billingexpr.BillingUnitRequest},
+		{name: "native hidden reasoning survives an estimated snapshot", expression: flat, stream: true, failed: true, localEstimate: true, usage: nativeReasoningUsage, want: 5000, unit: billingexpr.BillingUnitRequest},
+		{name: "mixed native usage keeps a failed stream billable", expression: flat, stream: true, failed: true, localEstimate: true, reportedUsage: true, usage: estimatedNativeUsage, want: 5000, unit: billingexpr.BillingUnitRequest},
+		{name: "failed fixed-price stream without usage is free", expression: flat, stream: true, failed: true, usage: &dto.Usage{}, unit: billingexpr.BillingUnitRequest},
+		{name: "failed stream does not charge estimated input", expression: `tier("tokens", p * 2 + c * 2)`, estimate: 100, stream: true, failed: true, localEstimate: true, usage: &dto.Usage{PromptTokens: 100, TotalTokens: 100}, unit: billingexpr.BillingUnitToken},
+		{name: "failed stream with an unpriced tool result keeps its fixed fee", expression: flat, stream: true, failed: true, outputObserved: true, usage: &dto.Usage{}, want: 5000, unit: billingexpr.BillingUnitRequest},
+		{name: "reported usage survives a later estimated input", expression: flat, stream: true, failed: true, localEstimate: true, reportedUsage: true, usage: &dto.Usage{PromptTokens: 100, TotalTokens: 100}, want: 5000, unit: billingexpr.BillingUnitRequest},
+		{name: "hidden reasoning details cannot waive a fixed charge", expression: flat, stream: true, failed: true, localEstimate: true, usage: &dto.Usage{PromptTokens: 100, TotalTokens: 100, CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 5}}, want: 5000, unit: billingexpr.BillingUnitRequest},
+		{name: "output-only reasoning details cannot waive a fixed charge", expression: flat, stream: true, failed: true, localEstimate: true, usage: &dto.Usage{OutputTokensDetails: &dto.OutputTokenDetails{ReasoningTokens: 5}}, want: 5000, unit: billingexpr.BillingUnitRequest},
+		{name: "failed stream preserves reported input usage", expression: `tier("tokens", p * 2 + c * 2)`, estimate: 100, stream: true, failed: true, usage: &dto.Usage{PromptTokens: 100, TotalTokens: 100}, want: 100, unit: billingexpr.BillingUnitToken},
+		{name: "failed stream preserves a single output token", expression: `tier("tokens", p * 2 + c * 2)`, estimate: 100, stream: true, failed: true, localEstimate: true, usage: &dto.Usage{PromptTokens: 100, CompletionTokens: 1, TotalTokens: 101}, want: 101, unit: billingexpr.BillingUnitToken},
+		{name: "failed stream with a completed tool remains billable", expression: flat, stream: true, failed: true, tool: true, usage: &dto.Usage{}, want: 7000, unit: billingexpr.BillingUnitRequest},
+		{name: "client cancellation cannot waive a fixed charge", expression: flat, stream: true, failed: true, clientGone: true, usage: &dto.Usage{}, want: 5000, unit: billingexpr.BillingUnitRequest},
 		{name: "missing usage charges once", expression: flat, want: 5000, unit: billingexpr.BillingUnitRequest},
 		{name: "zero usage charges once", expression: flat, usage: &dto.Usage{}, want: 5000, unit: billingexpr.BillingUnitRequest},
 		{name: "stream charges once", expression: flat, stream: true, usage: &dto.Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}, want: 5000, unit: billingexpr.BillingUnitRequest},
@@ -240,6 +262,19 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 					if tc.tool {
 						info.ResponsesUsageInfo = &relaycommon.ResponsesUsageInfo{BuiltInTools: map[string]*relaycommon.BuildInToolInfo{"fixed_billing_tool": {CallCount: 1}}}
 					}
+					if tc.failed {
+						info.StreamStatus = relaycommon.NewStreamStatus()
+						info.StreamStatus.MarkFailed("upstream_rejected", "invalid_request_error", 422)
+						info.StreamStatus.ObserveAccounting(tc.outputObserved, tc.reportedUsage, tc.localEstimate)
+						if tc.clientGone {
+							info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, nil)
+						} else {
+							info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+						}
+					}
+					if tc.localEstimate {
+						common.SetContextKey(ctx, constant.ContextKeyLocalCountTokens, true)
+					}
 					if tc.realtime {
 						PostWssConsumeQuota(ctx, info, info.OriginModelName, &dto.RealtimeUsage{
 							InputTokens: tc.usage.PromptTokens, OutputTokens: tc.usage.CompletionTokens, TotalTokens: tc.usage.TotalTokens,
@@ -255,9 +290,21 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 					assert.Equal(t, tc.want, log.Quota)
 					assert.Equal(t, tc.stream, log.IsStream)
 					assert.NotContains(t, log.Content, "nothing was charged")
+					if tc.failed && tc.want == 0 {
+						assert.Contains(t, log.Content, "no charge was applied")
+					}
 					var other map[string]any
 					require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
 					assert.Equal(t, string(tc.unit), other["billing_unit"])
+					if tc.failed {
+						admin := other["admin_info"].(map[string]any)
+						assert.Equal(t, "unknown", admin["upstream_billing_status"])
+						if tc.want == 0 {
+							assert.Equal(t, map[string]any{"action": "waived", "reason": "failed_without_output_or_usage"}, other["billing_decision"])
+						} else {
+							assert.NotContains(t, other, "billing_decision")
+						}
+					}
 					if tc.requestedImages > 0 {
 						count := tc.actualImages
 						if count == 0 {
@@ -303,8 +350,10 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 			assert.Equal(t, startingQuota-tc.want, token.RemainQuota)
 			assert.Equal(t, tc.want, user.UsedQuota)
 			assert.Equal(t, tc.want, token.UsedQuota)
-			if !tc.refund && !tc.insufficient {
+			if !tc.refund && !tc.insufficient && !(tc.failed && tc.want == 0) {
 				assert.Equal(t, 1, user.RequestCount)
+			} else {
+				assert.Zero(t, user.RequestCount)
 			}
 		})
 	}

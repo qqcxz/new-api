@@ -262,6 +262,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			func() {
 				writeMutex.Lock()
 				defer writeMutex.Unlock()
+				service.ObserveUpstreamStreamFailure(info, common.StringToByteSlice(data))
 				dataHandler(data, sr)
 			}()
 			if sr.IsStopped() {

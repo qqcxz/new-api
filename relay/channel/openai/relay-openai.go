@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/tokenkit"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
@@ -121,6 +122,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var secondLastStreamData string // 保留倒数第二个stream data；部分兼容网关把完整usage放在倒数第二个事件
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
+	var reportedUsage *dto.Usage
+	var reportedUsageFrame string
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
@@ -136,6 +139,19 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 			lastStreamData = data
 			observeStreamChoices(info, data, seenStreamToolCalls, &streamFunctionCallNames)
+			var frame struct {
+				Usage *dto.Usage `json:"usage"`
+			}
+			if common.UnmarshalJsonStr(data, &frame) == nil && frame.Usage != nil {
+				if frame.Usage.OutputTokensDetails != nil {
+					frame.Usage = dto.MergeUsageNonZero(&dto.Usage{CompletionTokenDetails: *frame.Usage.OutputTokensDetails}, frame.Usage)
+				}
+				if dto.HasOpenAIUsageTokens(frame.Usage) || frame.Usage.Cost != nil {
+					reportedUsage = dto.MergeUsageNonZero(reportedUsage, frame.Usage)
+					reportedUsageFrame = data
+					info.StreamStatus.ObserveAccounting(false, true, false)
+				}
+			}
 			if err := processTokenData(info, data, &responseTextBuilder, &toolCount); err != nil {
 				logger.LogError(c, common.LogText("error processing stream token data: %s", err.Error()))
 				sr.Error(err)
@@ -181,9 +197,23 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
+	if reportedUsage != nil {
+		usage = dto.MergeUsageNonZero(reportedUsage, usage)
+		containStreamUsage = true
+		usageFrame = reportedUsageFrame
+	}
+	info.StreamStatus.ObserveAccounting(responseTextBuilder.Len() > 0 || toolCount > 0, containStreamUsage, !containStreamUsage)
 	if !containStreamUsage {
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	} else if usage.CompletionTokens == 0 && (responseTextBuilder.Len() > 0 || toolCount > 0) {
+		// Early prompt-only usage can precede output and a failed terminal.
+		// Preserve the reported input and estimate only the missing output.
+		estimate := service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, usage.PromptTokens)
+		usage.CompletionTokens = estimate.CompletionTokens + toolCount*7
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		info.StreamStatus.ObserveAccounting(true, true, true)
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(usageFrame))
@@ -200,11 +230,21 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 // observeStreamChoices collects billable function call names and records the
 // finish reason facts used by health sampling from one parsed chunk.
 func observeStreamChoices(info *relaycommon.RelayInfo, data string, seen map[string]struct{}, names *[]string) {
+	// Preserve work evidence carried by extensions the text DTO does not model.
+	for _, choice := range gjson.Get(data, "choices").Array() {
+		for _, path := range []string{"text", "delta.audio.data", "delta.audio.transcript", "delta.refusal", "delta.function_call.name", "delta.function_call.arguments"} {
+			if choice.Get(path).String() != "" {
+				info.StreamStatus.ObserveAccounting(true, false, false)
+				break
+			}
+		}
+	}
 	var streamResponse dto.ChatCompletionsStreamResponse
 	if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 		return
 	}
 	for _, choice := range streamResponse.Choices {
+		info.StreamStatus.ObserveAccounting(choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != "" || len(choice.Delta.ToolCalls) > 0, false, false)
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
 			if *choice.FinishReason == constant.FinishReasonContentFilter {
 				info.PerformanceBusinessRejection = true

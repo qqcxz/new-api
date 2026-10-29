@@ -57,6 +57,7 @@ func patchGeminiZeroCompletionUsage(c *gin.Context, info *relaycommon.RelayInfo,
 		usage.CompletionTokens = imageCount * 1400
 	}
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	info.StreamStatus.ObserveAccounting(true, false, true)
 	// Settlement prefers BillingUsage, so fill the missing completion in the
 	// original upstream dialect without discarding cache or modality details.
 	if usage.BillingUsage != nil {
@@ -251,6 +252,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 
 		// 更新使用量统计
 		if metadata := geminiResponse.GetUsageMetadata(); dto.HasGeminiUsageMetadataTokens(metadata) {
+			info.StreamStatus.ObserveAccounting(false, true, false)
 			accumulatedUsageMetadata = dto.MergeGeminiUsageMetadataNonZero(accumulatedUsageMetadata, metadata)
 			mappedUsage := buildUsageFromGeminiMetadata(accumulatedUsageMetadata, info.GetEstimatePromptTokens())
 			*usage = mappedUsage
@@ -268,6 +270,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	})
 	info.StreamStatus.RequireTerminal()
 
+	info.StreamStatus.ObserveAccounting(responseText.Len() > 0 || imageCount > 0, false, !hasBillableUsageMetadata)
 	if !hasBillableUsageMetadata {
 		if info.ReceivedResponseCount > 0 {
 			usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())

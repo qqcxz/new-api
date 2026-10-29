@@ -128,7 +128,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendFinalRequestFormat(relayInfo, other)
 	appendBillingInfo(relayInfo, other)
 	appendParamOverrideInfo(relayInfo, other)
-	appendStreamStatus(relayInfo, other)
+	appendStreamStatus(ctx, relayInfo, other)
 	return other
 }
 
@@ -152,34 +152,60 @@ func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other *model.LogO
 	other.SetPublic("po", relayInfo.ParamOverrideAudit)
 }
 
-func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+func appendStreamStatus(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if relayInfo == nil || other == nil || !relayInfo.IsStream || relayInfo.StreamStatus == nil {
 		return
 	}
 	ss := relayInfo.StreamStatus
+	outcome := ss.OutcomeSnapshot()
 	status := "ok"
-	if !ss.IsNormalEnd() || ss.HasErrors() || ss.ResponseFailed() {
+	missingTerminal := outcome.ExpectsTerminal && outcome.Response == relaycommon.ResponseOutcomeUnknown && outcome.EndReason != relaycommon.StreamEndReasonDone
+	if !ss.IsNormalEnd() || ss.HasErrors() || ss.ResponseFailed() || missingTerminal {
 		status = "error"
 	}
 	streamInfo := map[string]any{
 		"status":     status,
 		"end_reason": string(ss.EndReason),
 	}
-	if outcome := ss.ResponseOutcome(); outcome != "" {
-		streamInfo["response_status"] = outcome
+	if outcome.Response != "" {
+		streamInfo["response_status"] = string(outcome.Response)
 	}
-	if ss.EndError != nil {
-		streamInfo["end_error"] = ss.EndError.Error()
+	if missingTerminal {
+		streamInfo["missing_terminal"] = true
 	}
 	if ss.ErrorCount > 0 {
 		streamInfo["error_count"] = ss.ErrorCount
-		messages := make([]string, 0, len(ss.Errors))
-		for _, e := range ss.Errors {
-			messages = append(messages, e.Message)
-		}
-		streamInfo["errors"] = messages
 	}
 	other.SetPublic("stream_status", streamInfo)
+
+	// Provider messages and transport errors can contain credentials or request
+	// data. Keep only bounded, masked diagnostics in the existing admin scope.
+	details := ss.FailureDetailsSnapshot()
+	diagnostics := map[string]any{}
+	for key, value := range map[string]string{
+		"event": details.Event, "code": outcome.ErrorCode, "type": outcome.ErrorType,
+		"message": details.Message, "incomplete_reason": outcome.IncompleteReason,
+	} {
+		if value != "" {
+			diagnostics[key] = maskStreamDiagnostic(ctx, relayInfo, value)
+		}
+	}
+	if outcome.ErrorStatus != 0 {
+		diagnostics["status_code"] = outcome.ErrorStatus
+	}
+	if ss.EndError != nil {
+		diagnostics["end_error"] = maskStreamDiagnostic(ctx, relayInfo, ss.EndError.Error())
+	}
+	if ss.ErrorCount > 0 {
+		messages := make([]string, 0, len(ss.Errors))
+		for _, entry := range ss.Errors {
+			messages = append(messages, maskStreamDiagnostic(ctx, relayInfo, entry.Message))
+		}
+		diagnostics["errors"] = messages
+	}
+	if len(diagnostics) > 0 {
+		other.SetAdmin("upstream_stream_error", diagnostics)
+	}
 }
 
 func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {

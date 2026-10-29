@@ -438,6 +438,14 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		}
 	}
 
+	waived := shouldWaiveFailedStream(relayInfo, originUsage, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), summary)
+	if waived {
+		// Decide after pricing but before counters and funding. Fixed-price
+		// expressions and estimation fallbacks must not re-charge a failed stream.
+		summary.Quota = 0
+		extraContent = append(extraContent, common.NewMessage("Upstream stream failed without output or reported usage; no charge was applied"))
+	}
+
 	for _, item := range summary.ToolSurchargeItems {
 		q := decimal.NewFromFloat(item.Price).
 			Mul(decimal.NewFromInt(int64(item.Count))).
@@ -455,10 +463,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, common.NewMessage("Audio input cost {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaFromDecimal(q))}))
 	}
 
-	if !summary.hasBillableUsage() {
+	if !waived && !summary.hasBillableUsage() {
 		extraContent = append(extraContent, common.NewMessage("Upstream returned no usage, so nothing was charged (possibly an upstream timeout)"))
 		logger.LogError(ctx, common.LogText("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
-	} else {
+	} else if !waived {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
@@ -490,7 +498,12 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	} else {
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	}
-	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), originUsage)
+	localEstimate := common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens)
+	appendUsageBillingPathForLog(other, localEstimate || relayInfo.StreamStatus.AccountingSnapshot().UsageEstimated, originUsage)
+	appendStreamBillingInfo(other, relayInfo, originUsage, localEstimate)
+	if waived {
+		other.SetPublic("billing_decision", map[string]any{"action": "waived", "reason": "failed_without_output_or_usage"})
+	}
 	if adminRejectReason != "" {
 		other.SetAdmin("reject_reason", adminRejectReason)
 	}

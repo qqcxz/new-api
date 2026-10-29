@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/tokenkit"
+	"github.com/tidwall/gjson"
 )
 
 // ResponsesUsageAccumulator owns the accounting facts for one Responses stream.
@@ -26,6 +27,9 @@ type ResponsesUsageAccumulator struct {
 }
 
 func NewResponsesUsageAccumulator(info *relaycommon.RelayInfo) *ResponsesUsageAccumulator {
+	if info.StreamStatus == nil {
+		info.StreamStatus = relaycommon.NewStreamStatus()
+	}
 	return &ResponsesUsageAccumulator{info: info, usage: &dto.Usage{}}
 }
 
@@ -35,15 +39,18 @@ func (a *ResponsesUsageAccumulator) Observe(event *dto.ResponsesStreamResponse, 
 	if a == nil || event == nil || a.finished {
 		return
 	}
+	ObserveUpstreamStreamFailure(a.info, raw)
 	if event.Response != nil {
 		a.info.ObserveResponseModel(event.Response.Model)
 	}
 	a.started = true
 	ObserveResponsesOutcome(a.info, event)
 	switch event.Type {
-	case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+	case "response.completed", "response.done", "response.failed", "response.error", "response.incomplete", "response.cancelled", "response.canceled":
 		if event.Response != nil {
 			ApplyResponsesUsage(a.usage, event.Response.Usage)
+			reported := dto.HasOpenAIUsageTokens(a.usage) || (event.Response.Usage != nil && event.Response.Usage.Cost != nil)
+			a.info.StreamStatus.ObserveAccounting(false, reported, false)
 			if a.outputText.Len() == 0 {
 				// Some upstreams carry the output only on the terminal event.
 				a.outputText.WriteString(relayconvert.ExtractOutputTextFromResponses(event.Response))
@@ -60,7 +67,11 @@ func (a *ResponsesUsageAccumulator) Observe(event *dto.ResponsesStreamResponse, 
 		// image items.
 		if event.Response != nil {
 			for i := range event.Response.Output {
-				a.imageCounter.Observe(&event.Response.Output[i], &i)
+				output := &event.Response.Output[i]
+				if output.Type != "message" || len(output.Content) > 0 {
+					a.info.StreamStatus.ObserveAccounting(true, false, false)
+				}
+				a.imageCounter.Observe(output, &i)
 			}
 		}
 		a.imageCounter.Commit(a.info)
@@ -70,8 +81,24 @@ func (a *ResponsesUsageAccumulator) Observe(event *dto.ResponsesStreamResponse, 
 		// Every delta kind here is generated output that upstream bills as
 		// output tokens, so all of them feed the missing-usage estimate.
 		a.outputText.WriteString(event.Delta)
-	case dto.ResponsesOutputTypeItemDone:
+		a.info.StreamStatus.ObserveAccounting(event.Delta != "", false, false)
+	case "response.custom_tool_call_input.delta":
+		a.outputText.WriteString(event.Delta)
+		a.info.StreamStatus.ObserveAccounting(event.Delta != "", false, false)
+	case "response.audio.delta", "response.output_audio.delta":
+		// Audio bytes prove generated work, but are not text token estimates.
+		a.info.StreamStatus.ObserveAccounting(event.Delta != "", false, false)
+	case "response.image_generation_call.partial_image":
+		a.info.StreamStatus.ObserveAccounting(gjson.GetBytes(raw, "partial_image_b64").String() != "", false, false)
+	case dto.ResponsesOutputTypeItemAdded, dto.ResponsesOutputTypeItemDone:
 		if event.Item == nil {
+			return
+		}
+		if event.Item.Type != "message" || len(event.Item.Content) > 0 {
+			// Tool and reasoning items are work even when they contain no text.
+			a.info.StreamStatus.ObserveAccounting(true, false, false)
+		}
+		if event.Type != dto.ResponsesOutputTypeItemDone {
 			return
 		}
 		switch event.Item.Type {
@@ -99,14 +126,15 @@ func (a *ResponsesUsageAccumulator) Finish() *dto.Usage {
 	if a.usage.CompletionTokens == 0 {
 		if output := a.outputText.String(); output != "" {
 			a.usage.CompletionTokens = tokenkit.Count(a.info.GetUpstreamModelName(), output)
+			a.info.StreamStatus.ObserveAccounting(true, false, true)
 		}
 	}
-	// Upstream bills the prompt as soon as it starts generating, so a stream
-	// that produced any event but no usage still owes its input tokens unless
-	// upstream reported an explicit failure.
+	// Retain the historical missing-usage policy for unknown interruptions and
+	// cancellations. An explicit failure cannot turn metadata into input usage.
 	billsPrompt := a.usage.CompletionTokens != 0 || (a.started && !a.info.StreamStatus.ResponseFailed())
 	if a.usage.PromptTokens == 0 && billsPrompt {
 		a.usage.PromptTokens = a.info.GetEstimatePromptTokens()
+		a.info.StreamStatus.ObserveAccounting(false, false, a.usage.PromptTokens > 0)
 	}
 	a.usage.TotalTokens = a.usage.PromptTokens + a.usage.CompletionTokens
 	if a.usage.BillingUsage != nil {
@@ -115,9 +143,8 @@ func (a *ResponsesUsageAccumulator) Finish() *dto.Usage {
 	return a.usage
 }
 
-// ObserveResponsesOutcome records the protocol outcome of one Responses event
-// on the stream status for health classification. Only codes and types are
-// kept; messages never leave the event.
+// ObserveResponsesOutcome records protocol facts and bounded administrator
+// diagnostics. Error messages stay separate from health classification.
 func ObserveResponsesOutcome(info *relaycommon.RelayInfo, event *dto.ResponsesStreamResponse) {
 	if info == nil || info.StreamStatus == nil || event == nil {
 		return
@@ -128,16 +155,18 @@ func ObserveResponsesOutcome(info *relaycommon.RelayInfo, event *dto.ResponsesSt
 	}
 	switch {
 	case event.Type == "error" || event.Type == "response.failed" || event.Type == "response.error" || responseStatus == "failed":
-		code, errorType := event.Code, ""
+		code, errorType, message := event.Code, "", event.Message
 		if event.Response != nil {
 			if oaiErr := event.Response.GetOpenAIError(); oaiErr != nil {
 				if oaiErr.Code != nil {
 					code = fmt.Sprint(oaiErr.Code)
 				}
 				errorType = oaiErr.Type
+				message = oaiErr.Message
 			}
 		}
 		info.StreamStatus.MarkFailed(code, errorType, 0)
+		info.StreamStatus.RecordFailureDetails(event.Type, maskStreamDiagnostic(nil, info, message))
 	case event.Type == "response.incomplete" || responseStatus == "incomplete":
 		reason := ""
 		if event.Response != nil && event.Response.IncompleteDetails != nil {

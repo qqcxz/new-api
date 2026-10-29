@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -21,6 +22,9 @@ import (
 
 func newResponsesChatTestContext(t *testing.T, body string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -321,6 +325,82 @@ func TestOaiChatToResponsesStreamHandlerRestoresCodexCustomToolCall(t *testing.T
 		`event: response.completed`,
 		`"type":"custom_tool_call"`,
 	)
+}
+
+func TestResponsesToChatFailedStreamKeepsAccountingEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, prefix, failure string
+		wantInput, wantOutput int
+		wantWork              bool
+	}{
+		{name: "explicit failure without work", failure: `{"type":"response.failed","response":{"status":"failed","error":{"type":"invalid_request_error","message":"rejected"}}}`},
+		{name: "reported input without visible text", failure: `{"type":"response.failed","response":{"status":"failed","usage":{"input_tokens":20,"total_tokens":20}}}`, wantInput: 20},
+		{name: "hidden reasoning without visible text", failure: `{"type":"response.error","response":{"status":"failed","usage":{"input_tokens":20,"output_tokens":5,"total_tokens":25,"output_tokens_details":{"reasoning_tokens":5}}}}`, wantInput: 20, wantOutput: 5},
+		{name: "tool output before failure", prefix: `{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup"}}`, failure: `{"type":"error","code":"server_error","message":"failed"}`, wantWork: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "data: " + tc.failure + "\n\n"
+			if tc.prefix != "" {
+				body = "data: " + tc.prefix + "\n\n" + body
+			}
+			ctx, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+			info.SetEstimatePromptTokens(100)
+			usage, apiErr := OaiResponsesToChatStreamHandler(ctx, info, resp)
+			require.Nil(t, apiErr, "protocol failures must reach normal settlement, including zero-quota logs")
+			require.NotNil(t, usage)
+			assert.Equal(t, tc.wantInput, usage.PromptTokens)
+			assert.Equal(t, tc.wantOutput, usage.CompletionTokens)
+			assert.True(t, info.StreamStatus.ResponseFailed())
+			assert.Equal(t, tc.wantWork, info.StreamStatus.AccountingSnapshot().OutputObserved)
+			assert.Contains(t, recorder.Body.String(), `"error"`)
+			assert.NotContains(t, recorder.Body.String(), "data: [DONE]")
+		})
+	}
+}
+
+func TestOaiStreamKeepsEarlyUsageAndEstimatesMissingOutput(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[],"usage":{"prompt_tokens":20,"total_tokens":20}}`,
+		`data: {"choices":[{"index":0,"delta":{"content":"hello from the upstream"}}]}`,
+		`data: {"error":{"type":"server_error","message":"generation failed"}}`,
+		"",
+	}, "\n\n")
+	ctx, _, resp, info := newResponsesChatTestContext(t, body, true)
+	info.RelayMode = relayconstant.RelayModeChatCompletions
+	info.SetEstimatePromptTokens(100)
+	usage, apiErr := OaiStreamHandler(ctx, info, resp)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 20, usage.PromptTokens)
+	assert.Positive(t, usage.CompletionTokens)
+	assert.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+	assert.True(t, info.StreamStatus.ResponseFailed())
+	facts := info.StreamStatus.AccountingSnapshot()
+	assert.True(t, facts.UpstreamUsageObserved)
+	assert.True(t, facts.UsageEstimated)
+	assert.True(t, facts.OutputObserved)
+}
+
+func TestOaiStreamPreservesOutputOnlyUsageEvidence(t *testing.T) {
+	for _, payload := range []string{
+		`{"output_tokens_details":{"reasoning_tokens":5}}`,
+		`{"cost":0}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			body := "data: {\"usage\":" + payload + "}\n\ndata: {\"error\":{\"message\":\"failed\"}}\n\n"
+			ctx, _, resp, info := newResponsesChatTestContext(t, body, true)
+			info.RelayMode = relayconstant.RelayModeChatCompletions
+			usage, apiErr := OaiStreamHandler(ctx, info, resp)
+			require.Nil(t, apiErr)
+			require.NotNil(t, usage)
+			assert.True(t, info.StreamStatus.ResponseFailed())
+			assert.True(t, info.StreamStatus.AccountingSnapshot().UpstreamUsageObserved)
+			assert.False(t, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens))
+			if strings.Contains(payload, "reasoning_tokens") {
+				assert.Equal(t, 5, usage.CompletionTokenDetails.ReasoningTokens)
+			}
+		})
+	}
 }
 
 func requireOrderedSubstrings(t *testing.T, s string, parts ...string) {

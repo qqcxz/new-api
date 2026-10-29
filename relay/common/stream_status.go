@@ -55,6 +55,71 @@ type StreamStatus struct {
 	errorStatus      int
 	incompleteReason string
 	expectsTerminal  bool
+
+	failureDetails StreamFailureDetails
+	accounting     StreamAccounting
+}
+
+// StreamFailureDetails is retained for administrator diagnostics only. It must
+// never be embedded in public outcome classification or returned to clients.
+type StreamFailureDetails struct {
+	Event   string `json:"event,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// StreamAccounting separates observations from local fallback token counts.
+// Reported usage is evidence of work, never proof of an upstream deduction.
+type StreamAccounting struct {
+	OutputObserved        bool
+	UpstreamUsageObserved bool
+	UsageEstimated        bool
+}
+
+func (s *StreamStatus) ObserveAccounting(output, upstreamUsage, estimated bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accounting.OutputObserved = s.accounting.OutputObserved || output
+	s.accounting.UpstreamUsageObserved = s.accounting.UpstreamUsageObserved || upstreamUsage
+	s.accounting.UsageEstimated = s.accounting.UsageEstimated || estimated
+}
+
+func (s *StreamStatus) AccountingSnapshot() StreamAccounting {
+	if s == nil {
+		return StreamAccounting{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.accounting
+}
+
+func (s *StreamStatus) RecordFailureDetails(event, message string) {
+	if s == nil {
+		return
+	}
+	// Bound retained provider text before it enters long-lived request/log state.
+	if len(message) > 4096 {
+		message = strings.ToValidUTF8(message[:4096], "") + "…"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if event != "" {
+		s.failureDetails.Event = event
+	}
+	if message != "" {
+		s.failureDetails.Message = message
+	}
+}
+
+func (s *StreamStatus) FailureDetailsSnapshot() StreamFailureDetails {
+	if s == nil {
+		return StreamFailureDetails{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failureDetails
 }
 
 // StreamOutcome holds classification facts only; upstream messages never

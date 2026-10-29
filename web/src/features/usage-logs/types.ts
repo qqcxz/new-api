@@ -122,6 +122,18 @@ export interface LogOtherData {
     use_channel?: number[]
     local_count_tokens?: boolean
     usage_billing_path?: UsageBillingPath | string
+    usage_source?: 'upstream' | 'local' | 'mixed' | 'missing' | string
+    upstream_billing_status?: 'unknown' | string
+    upstream_stream_error?: {
+      event?: string
+      status_code?: number
+      code?: string
+      type?: string
+      message?: string
+      incomplete_reason?: string
+      end_error?: string
+      errors?: string[]
+    }
     channel_affinity?: ChannelAffinityInfo
     // Top-up audit fields (type=1, admin only)
     payment_method?: string
@@ -248,8 +260,11 @@ export interface LogOtherData {
   po?: string[]
   billing_source?: string
   group?: string
+  billing_decision?: { action?: string; reason?: string }
   stream_status?: {
     status?: string
+    response_status?: string
+    missing_terminal?: boolean
     end_reason?: string
     error_count?: number
     end_error?: string

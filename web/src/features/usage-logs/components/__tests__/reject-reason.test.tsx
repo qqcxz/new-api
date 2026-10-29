@@ -52,7 +52,7 @@ function makeLog(other: LogOtherData): UsageLog {
   }
 }
 
-function renderDetails(isAdmin: boolean): void {
+function renderDetails(isAdmin: boolean, other?: LogOtherData): void {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -63,11 +63,13 @@ function renderDetails(isAdmin: boolean): void {
   render(
     <QueryClientProvider client={queryClient}>
       <DetailsDialog
-        log={makeLog({
-          admin_info: {
-            reject_reason: 'blocked by channel policy',
-          },
-        })}
+        log={makeLog(
+          other ?? {
+            admin_info: {
+              reject_reason: 'blocked by channel policy',
+            },
+          }
+        )}
         isAdmin={isAdmin}
         isRoot={false}
         open
@@ -85,6 +87,56 @@ afterEach(() => {
 })
 
 describe('usage log reject reason', () => {
+  const streamFailure = {
+    stream_status: {
+      status: 'error',
+      end_reason: 'eof',
+      response_status: 'failed',
+    },
+    admin_info: {
+      upstream_stream_error: {
+        event: 'response.failed',
+        status_code: 422,
+        code: 'upstream_rejected',
+        type: 'invalid_request_error',
+        message: 'The upstream rejected this request',
+      },
+      usage_source: 'missing',
+      upstream_billing_status: 'unknown',
+    },
+    billing_decision: {
+      action: 'waived',
+      reason: 'failed_without_output_or_usage',
+    },
+  }
+
+  test('shows detailed upstream stream errors and unverified billing to admins', () => {
+    renderDetails(true, streamFailure)
+    expect(
+      screen.getByText('The upstream rejected this request')
+    ).toBeInTheDocument()
+    expect(screen.getByText('422')).toBeInTheDocument()
+    expect(screen.getByText('No usage reported')).toBeInTheDocument()
+    expect(screen.getByText('Unknown (not verified)')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'No charge: upstream failure without output or reported usage'
+      )
+    ).toBeInTheDocument()
+  })
+
+  test('keeps upstream stream diagnostics private while explaining the waived charge', () => {
+    renderDetails(false, streamFailure)
+    expect(screen.queryByText('The upstream rejected this request')).toBeNull()
+    expect(screen.queryByText('upstream_rejected')).toBeNull()
+    expect(screen.queryByText('Unknown (not verified)')).toBeNull()
+    expect(
+      screen.getByText(
+        'No charge: upstream failure without output or reported usage'
+      )
+    ).toBeInTheDocument()
+  })
+
   test('shows the nested admin reject reason to admins', () => {
     renderDetails(true)
 

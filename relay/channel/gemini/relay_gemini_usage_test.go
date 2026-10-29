@@ -562,6 +562,10 @@ func TestGeminiStreamHandlerPromptOnlyUsageMetadataEstimatesCompletionTokens(t *
 			require.True(t, usage.BillingUsage.Estimated)
 			require.NotNil(t, usage.BillingUsage.GeminiUsageMetadata)
 			require.Equal(t, usage.CompletionTokens, usage.BillingUsage.GeminiUsageMetadata.CandidatesTokenCount)
+			facts := info.StreamStatus.AccountingSnapshot()
+			assert.True(t, facts.UpstreamUsageObserved)
+			assert.True(t, facts.OutputObserved)
+			assert.True(t, facts.UsageEstimated)
 		})
 	}
 }

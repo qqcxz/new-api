@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -11,6 +12,53 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStreamFailureDiagnosticsMaskCredentials(t *testing.T) {
+	info := &relaycommon.RelayInfo{IsStream: true, ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "known-stream-secret"}, StreamStatus: relaycommon.NewStreamStatus()}
+	payload := `{"error":{"code":429,"type":"rate_limit_error","message":"quota exceeded Authorization: Bearer audit-token; {\"api_key\":\"json-token\"} raw known-stream-secret sk-provider-secret"}}`
+	ObserveUpstreamStreamFailure(info, []byte(payload))
+	assert.True(t, info.StreamStatus.ResponseFailed())
+	message := info.StreamStatus.FailureDetailsSnapshot().Message
+	assert.Contains(t, message, "quota exceeded")
+	other := model.NewLogOther()
+	appendStreamStatus(nil, info, other)
+	var stored map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(other.JSONString(), &stored))
+	public, ok := stored["stream_status"].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, public, "message")
+	assert.NotContains(t, public, "errors")
+	assert.NotContains(t, public, "end_error")
+	admin, ok := stored["admin_info"].(map[string]any)
+	require.True(t, ok)
+	diagnostics, ok := admin["upstream_stream_error"].(map[string]any)
+	require.True(t, ok)
+	assert.Contains(t, diagnostics["message"], "quota exceeded")
+	for _, secret := range []string{"audit-token", "json-token", "known-stream-secret", "sk-provider-secret"} {
+		assert.NotContains(t, message, secret)
+		assert.NotContains(t, other.JSONString(), secret)
+	}
+}
+
+func TestFailedStreamWithNonTextOutputCannotBeWaived(t *testing.T) {
+	for _, payload := range []string{
+		`{"type":"response.audio.delta","delta":"audio-bytes"}`,
+		`{"type":"response.output_audio.delta","delta":"audio-bytes"}`,
+		`{"type":"response.image_generation_call.partial_image","partial_image_b64":"image-bytes"}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{IsStream: true}
+			accumulator := NewResponsesUsageAccumulator(info)
+			var event dto.ResponsesStreamResponse
+			require.NoError(t, common.UnmarshalJsonStr(payload, &event))
+			accumulator.Observe(&event, []byte(payload))
+			accumulator.Observe(&dto.ResponsesStreamResponse{Type: "response.failed"}, nil)
+			usage := accumulator.Finish()
+			assert.Zero(t, usage.CompletionTokens, "binary output must not be counted as text tokens")
+			assert.False(t, shouldWaiveFailedStream(info, usage, false, textQuotaSummary{}), "generated non-text work must retain the configured fee")
+		})
+	}
+}
 
 func TestResponsesUsageAccumulatorTerminalAccounting(t *testing.T) {
 	operation_setting.SetToolPriceForTest("responses_priced_fn", 5)
@@ -23,6 +71,7 @@ func TestResponsesUsageAccumulatorTerminalAccounting(t *testing.T) {
 		{eventType: "response.done", wantImages: 1},
 		{eventType: "response.incomplete", wantImages: 1},
 		{eventType: "response.failed", wantImages: 1},
+		{eventType: "response.error", wantImages: 1},
 		{eventType: "response.cancelled", wantImages: 1},
 		{eventType: "response.canceled", wantImages: 1},
 	} {
@@ -50,7 +99,7 @@ func TestResponsesUsageAccumulatorTerminalAccounting(t *testing.T) {
 			accumulator.Observe(terminal, nil)
 			accumulator.Observe(terminal, nil)
 			usage := accumulator.Finish()
-			assert.Equal(t, tc.eventType == "response.failed", info.StreamStatus.ResponseFailed())
+			assert.Equal(t, tc.eventType == "response.failed" || tc.eventType == "response.error", info.StreamStatus.ResponseFailed())
 			assert.NotEmpty(t, info.StreamStatus.ResponseOutcome())
 
 			assert.Equal(t, 20, usage.PromptTokens)

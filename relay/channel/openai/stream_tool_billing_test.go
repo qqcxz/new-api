@@ -8,6 +8,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStreamChoicesPreserveNonTextWorkEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		data string
+		work bool
+	}{
+		{`{"choices":[{"delta":{"role":"assistant"}}]}`, false},
+		{`{"choices":[{"delta":{"audio":{"data":"audio-bytes"}}}]}`, true},
+		{`{"choices":[{"delta":{"audio":{"transcript":"spoken text"}}}]}`, true},
+		{`{"choices":[{"delta":{"refusal":"cannot answer"}}]}`, true},
+		{`{"choices":[{"delta":{"function_call":{"name":"lookup","arguments":"{}"}}}]}`, true},
+		{`{"choices":[{"text":"generated completion"}]}`, true},
+	} {
+		t.Run(tc.data, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{StreamStatus: relaycommon.NewStreamStatus()}
+			var names []string
+			observeStreamChoices(info, tc.data, map[string]struct{}{}, &names)
+			assert.Equal(t, tc.work, info.StreamStatus.AccountingSnapshot().OutputObserved)
+		})
+	}
+}
+
 func TestObserveStreamChoicesDedupesFunctionCallNames(t *testing.T) {
 	info := &relaycommon.RelayInfo{StreamStatus: relaycommon.NewStreamStatus()}
 	seen := make(map[string]struct{})

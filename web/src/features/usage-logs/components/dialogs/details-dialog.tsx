@@ -123,6 +123,11 @@ function getUsageBillingPathLabel(
   t: TFunction,
   adminInfo: LogOtherData['admin_info']
 ): string {
+  if (adminInfo?.usage_source === 'missing') return t('No usage reported')
+  if (adminInfo?.usage_source === 'local') return t('Locally estimated usage')
+  if (adminInfo?.usage_source === 'mixed') {
+    return t('Reported and estimated usage')
+  }
   switch (adminInfo?.usage_billing_path) {
     case USAGE_BILLING_PATH.LOCAL:
       return t('Local Billing')
@@ -1264,6 +1269,79 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
+        {other?.billing_decision?.action === 'waived' && (
+          <DetailRow
+            label={t('Billing Decision')}
+            value={t(
+              'No charge: upstream failure without output or reported usage'
+            )}
+          />
+        )}
+        {props.isAdmin &&
+          other?.admin_info?.upstream_billing_status === 'unknown' && (
+            <DetailRow
+              label={t('Upstream Billing')}
+              value={t('Unknown (not verified)')}
+            />
+          )}
+        {props.isAdmin && other?.admin_info?.upstream_stream_error && (
+          <DetailSection label={t('Upstream Stream Error')}>
+            {other.admin_info.upstream_stream_error.event && (
+              <DetailRow
+                label={t('Event')}
+                value={other.admin_info.upstream_stream_error.event}
+                mono
+              />
+            )}
+            {other.admin_info.upstream_stream_error.status_code != null && (
+              <DetailRow
+                label={t('Status Code')}
+                value={String(
+                  other.admin_info.upstream_stream_error.status_code
+                )}
+              />
+            )}
+            {other.admin_info.upstream_stream_error.code && (
+              <DetailRow
+                label={t('Error Code')}
+                value={other.admin_info.upstream_stream_error.code}
+                mono
+              />
+            )}
+            {other.admin_info.upstream_stream_error.type && (
+              <DetailRow
+                label={t('Error Type')}
+                value={other.admin_info.upstream_stream_error.type}
+                mono
+              />
+            )}
+            {other.admin_info.upstream_stream_error.message && (
+              <DetailRow
+                label={t('Error Message')}
+                value={other.admin_info.upstream_stream_error.message}
+              />
+            )}
+            {other.admin_info.upstream_stream_error.incomplete_reason && (
+              <DetailRow
+                label={t('End Reason')}
+                value={other.admin_info.upstream_stream_error.incomplete_reason}
+              />
+            )}
+            {other.admin_info.upstream_stream_error.end_error && (
+              <DetailRow
+                label={t('End Error')}
+                value={other.admin_info.upstream_stream_error.end_error}
+              />
+            )}
+            {(other.admin_info.upstream_stream_error.errors?.length ?? 0) >
+              0 && (
+              <pre className='bg-background/60 mt-1 max-h-32 overflow-y-auto rounded border p-2 font-mono text-[11px] leading-relaxed wrap-break-word whitespace-pre-wrap'>
+                {other.admin_info.upstream_stream_error.errors?.join('\n')}
+              </pre>
+            )}
+          </DetailSection>
+        )}
+
         {/* Stream status details */}
         {other?.stream_status && other.stream_status.status !== 'ok' && (
           <DetailSection label={t('Stream Status')}>
@@ -1290,13 +1368,20 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 value={String(other.stream_status.error_count)}
               />
             )}
-            {other.stream_status.end_error && (
+            {other.stream_status.missing_terminal && (
+              <DetailRow
+                label={t('End Error')}
+                value={t('Stream ended without a terminal event')}
+              />
+            )}
+            {props.isAdmin && other.stream_status.end_error && (
               <DetailRow
                 label={t('End Error')}
                 value={other.stream_status.end_error}
               />
             )}
-            {Array.isArray(other.stream_status.errors) &&
+            {props.isAdmin &&
+              Array.isArray(other.stream_status.errors) &&
               other.stream_status.errors.length > 0 && (
                 <pre className='bg-background/60 mt-1 max-h-32 overflow-y-auto rounded border p-2 font-mono text-[11px] leading-relaxed wrap-break-word whitespace-pre-wrap'>
                   {other.stream_status.errors.join('\n')}

@@ -187,10 +187,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	streamErr := (*types.NewAPIError)(nil)
-	// upstreamFailed records a response.failed / response.error event and
-	// failedUsage the usage it reported, if any.
 	upstreamFailed := false
-	var failedUsage *dto.Usage
+	accounting := service.NewResponsesUsageAccumulator(info)
 
 	if info.RelayFormat == types.RelayFormatClaude && info.ClaudeConvertInfo == nil {
 		info.ClaudeConvertInfo = &relaycommon.ClaudeConvertInfo{LastMessagesType: relaycommon.LastMessageTypeNone}
@@ -276,13 +274,10 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return
 		}
 
-		if streamResp.Response != nil {
-			info.ObserveResponseModel(streamResp.Response.Model)
-		}
-		if streamResp.Type == "response.error" || streamResp.Type == "response.failed" {
+		accounting.Observe(&streamResp, common.StringToByteSlice(data))
+		if info.StreamStatus.ResponseFailed() {
 			upstreamFailed = true
 			if streamResp.Response != nil {
-				failedUsage = streamResp.Response.Usage
 				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
 					streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
 					stopStream(sr, streamErr)
@@ -308,37 +303,15 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 	})
 
+	info.StreamStatus.RequireTerminal()
 	if streamErr != nil {
-		if !upstreamFailed || state.UsageText() == "" {
+		if !upstreamFailed {
 			return nil, streamErr
 		}
-		// The upstream failed after output reached the client: bill the
-		// delivered output (upstream usage when reported, otherwise the
-		// estimate) and send the client the same error the failed request
-		// path writes. stream_status already records the failure.
-		usage := relayconvert.UsageFromResponsesUsage(failedUsage)
-		if usage.TotalTokens == 0 {
-			usage = state.Usage()
-		}
-		if usage == nil || usage.TotalTokens == 0 {
-			usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		} else if usage.CompletionTokens == 0 || usage.PromptTokens == 0 {
-			// As in the native Responses accumulator, reported usage that
-			// omits the output or the prompt is completed from the estimate of
-			// the delivered output and the prompt.
-			estimate := service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-			if usage.CompletionTokens == 0 {
-				usage.CompletionTokens = estimate.CompletionTokens
-			}
-			if usage.PromptTokens == 0 {
-				usage.PromptTokens = estimate.PromptTokens
-			}
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-			if usage.BillingUsage != nil {
-				usage.BillingUsage = dto.CloneBillingUsageWithEstimatedCompletion(usage.BillingUsage, usage.CompletionTokens)
-			}
-		}
-		logger.LogError(c, common.LogText("responses stream failed after output was delivered, billing the delivered output: %s", streamErr.Error()))
+		// Share native Responses accounting, including hidden usage and tools.
+		// Settlement decides whether an output-free explicit failure is waived.
+		usage := accounting.Finish()
+		logger.LogError(c, common.LogText("responses stream failed; settling observed usage: %s", common.MaskSensitiveInfo(streamErr.Error(), common.UpstreamAddresses(c)...)))
 		clientError := *service.ClientRelayError(c, streamErr)
 		if clientError.Error() == streamErr.Error() {
 			clientError.SetMessage(common.MessageWithRequestId(clientError.Error(), c.GetString(common.RequestIdKey)))
@@ -351,11 +324,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return usage, nil
 	}
 
-	usage := state.Usage()
-	if usage == nil || usage.TotalTokens == 0 {
-		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		state.SetUsage(usage)
-	}
+	usage := accounting.Finish()
+	state.SetUsage(usage)
 	if info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
 		return usage, nil
 	}

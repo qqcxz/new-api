@@ -290,6 +290,7 @@ func CalcOpenRouterCacheCreateTokens(usage dto.Usage, priceData types.PriceData)
 }
 
 func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []*common.Message) {
+	originUsage := usage
 	if usage == nil {
 		usage = &dto.Usage{PromptTokens: relayInfo.GetEstimatePromptTokens(), TotalTokens: relayInfo.GetEstimatePromptTokens()}
 	}
@@ -361,8 +362,13 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		}))
 	}
 
+	localEstimate := originUsage == nil || common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens)
+	waived := shouldWaiveFailedStream(relayInfo, originUsage, localEstimate, textQuotaSummary{CompletionTokens: usage.CompletionTokens})
 	// record all the consume log even if quota is 0
-	if totalTokens == 0 && !fixedPriceBilling {
+	if waived {
+		quota = 0
+		logContent = append(logContent, common.NewMessage("Upstream stream failed without output or reported usage; no charge was applied"))
+	} else if totalTokens == 0 && !fixedPriceBilling {
 		// in this case, must be some error happened
 		// we cannot just return, because we may have to return the pre-consumed quota
 		quota = 0
@@ -382,6 +388,11 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	logContent = append(logContent, extraContent...)
 	other := GenerateAudioOtherInfo(ctx, relayInfo, usage, modelRatio, groupRatio,
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
+	appendUsageBillingPathForLog(other, localEstimate || relayInfo.StreamStatus.AccountingSnapshot().UsageEstimated, originUsage)
+	appendStreamBillingInfo(other, relayInfo, originUsage, localEstimate)
+	if waived {
+		other.SetPublic("billing_decision", map[string]any{"action": "waived", "reason": "failed_without_output_or_usage"})
+	}
 	if tieredResult != nil {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
