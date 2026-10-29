@@ -46,7 +46,11 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {
 		return
 	}
 
-	publicData := SanitizeUpstreamErrorPayload(c, data)
+	statusCode := 0
+	if src != nil {
+		statusCode = src.StatusCode
+	}
+	publicData := SanitizeUpstreamErrorPayload(c, data, statusCode)
 	errorRewritten := !bytes.Equal(data, publicData)
 	data = publicData
 	body := io.NopCloser(bytes.NewBuffer(data))

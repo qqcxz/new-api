@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -17,15 +18,24 @@ import (
 
 // PublicUpstreamError contains only site-owned fields. Provider error codes,
 // parameter names and metadata can identify a provider just like its message.
-func PublicUpstreamError(c *gin.Context) types.OpenAIError {
-	message := strings.TrimSpace(operation_setting.GetGeneralSetting().UpstreamErrorMessage)
-	if message == "" {
-		message = i18n.T(c, i18n.MsgRelayServiceError)
+func PublicUpstreamError(c *gin.Context, statusCode int, codes ...string) types.OpenAIError {
+	category := common.UpstreamErrorCategory(statusCode, codes...)
+	if category == "api_error" && c != nil && c.Writer != nil && c.Writer.Written() && strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
+		category = "stream_interrupted"
+	}
+	message := ""
+	if category == "api_error" {
+		message = strings.TrimSpace(operation_setting.GetGeneralSetting().UpstreamErrorMessage)
+		if message == "" {
+			message = i18n.T(c, i18n.MsgRelayServiceError)
+		}
+	} else {
+		message = i18n.T(c, "relay.error."+category)
 	}
 	if c != nil && c.GetString(common.RequestIdKey) != "" {
 		message = common.MessageWithRequestId(message, c.GetString(common.RequestIdKey))
 	}
-	return types.OpenAIError{Message: message, Type: "api_error", Code: "api_error"}
+	return types.OpenAIError{Message: message, Type: "api_error", Code: category}
 }
 
 // ClientRelayError projects an error for the client without changing the error
@@ -34,19 +44,11 @@ func ClientRelayError(c *gin.Context, apiErr *types.NewAPIError) *types.NewAPIEr
 	if apiErr == nil || !operation_setting.GetGeneralSetting().HideUpstreamError {
 		return apiErr
 	}
-	if apiErr.GetErrorType() == types.ErrorTypeNewAPIError && !types.IsChannelError(apiErr) {
-		switch apiErr.GetErrorCode() {
-		case types.ErrorCodeDoRequestFailed, types.ErrorCodeGetChannelFailed,
-			types.ErrorCodeReadResponseBodyFailed, types.ErrorCodeBadResponseStatusCode,
-			types.ErrorCodeBadResponse, types.ErrorCodeBadResponseBody,
-			types.ErrorCodeEmptyResponse, types.ErrorCodeAwsInvokeError,
-			types.ErrorCodeModelNotFound, types.ErrorCodePromptBlocked,
-			types.ErrorCodeViolationFeeGrokCSAM:
-		default:
-			return apiErr
-		}
+	if common.IsLocalRelayError(string(apiErr.GetErrorType()), string(apiErr.GetErrorCode())) {
+		return apiErr
 	}
-	return types.WithOpenAIError(PublicUpstreamError(c), apiErr.StatusCode)
+	original := apiErr.ToOpenAIError()
+	return types.WithOpenAIError(PublicUpstreamError(c, apiErr.StatusCode, string(apiErr.GetErrorCode()), original.Type), apiErr.StatusCode)
 }
 
 // ClientTaskError applies the same output policy to asynchronous submission and
@@ -55,16 +57,16 @@ func ClientTaskError(c *gin.Context, taskErr *taskdto.TaskError) *taskdto.TaskEr
 	if taskErr == nil || taskErr.LocalError || !operation_setting.GetGeneralSetting().HideUpstreamError {
 		return taskErr
 	}
-	public := PublicUpstreamError(c)
+	public := PublicUpstreamError(c, taskErr.StatusCode, taskErr.Code)
 	result := *taskErr
-	result.Code, result.Message, result.Data = "api_error", public.Message, nil
+	result.Code, result.Message, result.Data = public.Code.(string), public.Message, nil
 	return &result
 }
 
 // SanitizeUpstreamErrorPayload covers errors received after streaming starts.
 // Keep protocol field positions, output, usage and routing identifiers intact;
 // inspect only error fields, never generated content or tool results.
-func SanitizeUpstreamErrorPayload(c *gin.Context, payload []byte) []byte {
+func SanitizeUpstreamErrorPayload(c *gin.Context, payload []byte, httpStatus ...int) []byte {
 	if !operation_setting.GetGeneralSetting().HideUpstreamError || (c != nil && c.GetBool("client_relay_error_prepared")) {
 		return payload
 	}
@@ -86,7 +88,23 @@ func SanitizeUpstreamErrorPayload(c *gin.Context, payload []byte) []byte {
 	if common.Unmarshal(payload, &body) != nil {
 		return payload
 	}
-	public := PublicUpstreamError(c)
+	statusCode := 0
+	if len(httpStatus) > 0 {
+		statusCode = httpStatus[0]
+	}
+	// A stream may already have HTTP 200 headers. Read only structured error
+	// status/code fields; never infer a cause from generated text or messages.
+	for _, path := range []string{"error.status_code", "error.status", "error.code", "response.error.status_code", "response.error.status", "response.error.code", "response.status_details.error.status_code", "response.status_details.error.code", "status_code", "status", "code"} {
+		if status, err := strconv.Atoi(root.Get(path).String()); err == nil && status >= 400 && status <= 599 {
+			if statusCode < 400 || statusCode > 599 {
+				statusCode = status
+			}
+			break
+		}
+	}
+	public := PublicUpstreamError(c, statusCode,
+		root.Get("error.code").String(), root.Get("response.error.code").String(), root.Get("response.status_details.error.code").String(), root.Get("code").String(),
+		root.Get("error.type").String(), root.Get("response.error.type").String(), root.Get("response.status_details.error.type").String())
 	publicError, err := common.Marshal(public)
 	if err != nil {
 		return payload

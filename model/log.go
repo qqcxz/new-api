@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 
 	"gorm.io/gorm"
 )
@@ -129,9 +130,23 @@ func formatUserLog(log *Log) {
 	if log.Type != LogTypeError || !settings.HideUpstreamError {
 		return
 	}
-	message := strings.TrimSpace(settings.UpstreamErrorMessage)
-	if message == "" {
-		message = i18n.Translate("", i18n.MsgRelayServiceError)
+	details := gjson.Parse(log.Other)
+	errorType, errorCode := details.Get("error_type").String(), details.Get("error_code").String()
+	if common.IsLocalRelayError(errorType, errorCode) {
+		return
+	}
+	category := common.UpstreamErrorCategory(int(details.Get("status_code").Int()), errorCode)
+	if category == "api_error" && log.IsStream {
+		category = "stream_interrupted"
+	}
+	message := ""
+	if category == "api_error" {
+		message = strings.TrimSpace(settings.UpstreamErrorMessage)
+		if message == "" {
+			message = i18n.Translate("", i18n.MsgRelayServiceError)
+		}
+	} else {
+		message = i18n.Translate("", "relay.error."+category)
 	}
 	if log.RequestId != "" {
 		message = common.MessageWithRequestId(message, log.RequestId)
@@ -144,7 +159,7 @@ func formatUserLog(log *Log) {
 		log.Other = "{}"
 		return
 	}
-	public := make(map[string]any)
+	public := map[string]any{"error_code": category}
 	for _, key := range []string{"request_path", "status_code"} {
 		if value, ok := other[key]; ok {
 			public[key] = value

@@ -49,6 +49,28 @@ const (
 	MsgRelayRetryNoAvailableChannel      = "relay.retry_no_available_channel"
 	MsgRelayServiceError                 = "relay.service_error"
 	MsgRelayAccessTokenUnsupported       = "relay.access_token_unsupported"
+
+	MsgRelayErrorInvalidRequest       = "relay.error.invalid_request"
+	MsgRelayErrorAuthentication       = "relay.error.authentication_error"
+	MsgRelayErrorInsufficientQuota    = "relay.error.insufficient_quota"
+	MsgRelayErrorAccessDenied         = "relay.error.access_denied"
+	MsgRelayErrorNotFound             = "relay.error.not_found"
+	MsgRelayErrorMethodNotAllowed     = "relay.error.method_not_allowed"
+	MsgRelayErrorRequestTimeout       = "relay.error.request_timeout"
+	MsgRelayErrorConflict             = "relay.error.conflict"
+	MsgRelayErrorPayloadTooLarge      = "relay.error.payload_too_large"
+	MsgRelayErrorUnsupportedMediaType = "relay.error.unsupported_media_type"
+	MsgRelayErrorUnprocessableEntity  = "relay.error.unprocessable_entity"
+	MsgRelayErrorRateLimitExceeded    = "relay.error.rate_limit_exceeded"
+	MsgRelayErrorInternal             = "relay.error.internal_error"
+	MsgRelayErrorNotImplemented       = "relay.error.not_implemented"
+	MsgRelayErrorBadGateway           = "relay.error.bad_gateway"
+	MsgRelayErrorServiceUnavailable   = "relay.error.service_unavailable"
+	MsgRelayErrorGatewayTimeout       = "relay.error.gateway_timeout"
+	MsgRelayErrorContextLength        = "relay.error.context_length_exceeded"
+	MsgRelayErrorContentPolicy        = "relay.error.content_policy_violation"
+	MsgRelayErrorModelNotFound        = "relay.error.model_not_found"
+	MsgRelayErrorStreamInterrupted    = "relay.error.stream_interrupted"
 )
 
 // Emails and the name of the token created at registration, in the

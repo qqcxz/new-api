@@ -78,9 +78,18 @@ beforeEach(() => {
 test('enabling error privacy enables the message field and saves both option keys', async () => {
   const user = userEvent.setup()
   const toggle = await renderSettings()
-  const input = screen.getByRole('textbox', { name: 'Custom error message' })
+  const input = screen.getByRole('textbox', { name: 'Fallback error message' })
   expect(toggle).not.toBeChecked()
   expect(input).toBeDisabled()
+  expect(input).toHaveAttribute(
+    'placeholder',
+    'Leave blank to use the default message for unrecognized errors'
+  )
+  expect(
+    screen.getByText(
+      'Common error causes take priority. This message is only used for unrecognized errors. A local request ID is included.'
+    )
+  ).toBeVisible()
   await user.click(toggle)
   expect(input).toBeEnabled()
   await user.type(input, 'Please contact support')
@@ -99,7 +108,7 @@ test('enabling error privacy enables the message field and saves both option key
 
 test('an empty message is accepted and disabling privacy preserves the draft', async () => {
   const toggle = await renderSettings()
-  const input = screen.getByRole('textbox', { name: 'Custom error message' })
+  const input = screen.getByRole('textbox', { name: 'Fallback error message' })
   fireEvent.click(toggle)
   fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
   await waitFor(() =>

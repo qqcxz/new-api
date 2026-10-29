@@ -182,7 +182,7 @@ export function SystemBehaviorSection({
                   <FormLabel>{t('Hide upstream error details')}</FormLabel>
                   <FormDescription>
                     {t(
-                      'Replace provider errors returned to API clients. HTTP status codes, retries and administrator diagnostics are preserved. Disabled by default.'
+                      'Hide provider identity and internal details while preserving common error causes and local validation messages. HTTP status codes, retries and administrator diagnostics are preserved. Disabled by default.'
                     )}
                   </FormDescription>
                 </SettingsSwitchContent>
@@ -200,19 +200,19 @@ export function SystemBehaviorSection({
             name='general_setting.upstream_error_message'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>{t('Custom error message')}</FormLabel>
+                <FormLabel>{t('Fallback error message')}</FormLabel>
                 <FormControl>
                   <Input
                     {...field}
                     disabled={!hideUpstreamError}
                     placeholder={t(
-                      'Leave blank to use the default service error message'
+                      'Leave blank to use the default message for unrecognized errors'
                     )}
                   />
                 </FormControl>
                 <FormDescription>
                   {t(
-                    'Applies when upstream error details are hidden. A local request ID is included for troubleshooting.'
+                    'Common error causes take priority. This message is only used for unrecognized errors. A local request ID is included.'
                   )}
                 </FormDescription>
               </FormItem>

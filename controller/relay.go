@@ -385,7 +385,7 @@ func RelayMidjourney(c *gin.Context) {
 		}
 		description, errorType, errorCode := fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result), "upstream_error", mjErr.Code
 		if operation_setting.GetGeneralSetting().HideUpstreamError {
-			description, errorType, errorCode = service.PublicUpstreamError(c).Message, "api_error", 4
+			description, errorType, errorCode = service.PublicUpstreamError(c, statusCode).Message, "api_error", 4
 		}
 		c.JSON(statusCode, gin.H{
 			"description": description,

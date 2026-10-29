@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +12,10 @@ import (
 )
 
 func TestUpstreamErrorPrivacyInLogViews(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	previousLanguage := common.DefaultLanguage
+	common.DefaultLanguage = "en"
+	t.Cleanup(func() { common.DefaultLanguage = previousLanguage })
 	settings := operation_setting.GetGeneralSetting()
 	previous := *settings
 	t.Cleanup(func() { *settings = previous })
@@ -21,9 +26,9 @@ func TestUpstreamErrorPrivacyInLogViews(t *testing.T) {
 	}
 	userLog := original
 	formatUserLogs([]*Log{&userLog}, 0)
-	assert.Equal(t, "Please retry (request id: local-request)", userLog.Content)
+	assert.Equal(t, "The request rate limit was reached. Please try again later. (request id: local-request)", userLog.Content)
 	assert.NotContains(t, userLog.Other, "PrivateProvider")
-	assert.JSONEq(t, `{"status_code":429,"request_path":"/v1/messages"}`, userLog.Other)
+	assert.JSONEq(t, `{"status_code":429,"request_path":"/v1/messages","error_code":"rate_limit_exceeded"}`, userLog.Other)
 	exportLog := original
 	formatUserLog(&exportLog)
 	assert.Equal(t, userLog.Content, exportLog.Content)
@@ -41,6 +46,36 @@ func TestUpstreamErrorPrivacyInLogViews(t *testing.T) {
 	formatUserLog(&visibleLog)
 	assert.Equal(t, original.Content, visibleLog.Content)
 	assert.Contains(t, visibleLog.Other, "PrivateProvider_code")
+}
+
+func TestErrorPrivacyLogCausesAndLocalMessages(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	settings := operation_setting.GetGeneralSetting()
+	previous, previousLanguage := *settings, common.DefaultLanguage
+	t.Cleanup(func() { *settings, common.DefaultLanguage = previous, previousLanguage })
+	common.DefaultLanguage = "zh-CN"
+	settings.HideUpstreamError, settings.UpstreamErrorMessage = true, "Unrecognized failure"
+	for _, tc := range []struct {
+		name, other, message string
+	}{
+		{"quota", `{"error_type":"openai_error","error_code":"private_code","status_code":402}`, "服务余额或额度不足，请联系管理员处理。"},
+		{"context", `{"error_type":"openai_error","error_code":"context_length_exceeded","status_code":400}`, "输入内容超出模型上下文长度限制，请缩短输入或减少输出长度。"},
+		{"unknown", `{"error_type":"openai_error","error_code":"private_code","status_code":599}`, "Unrecognized failure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := Log{Type: LogTypeError, Content: "PrivateProvider failed", RequestId: "local-request", Other: tc.other}
+			formatUserLog(&log)
+			assert.Equal(t, tc.message+" (request id: local-request)", log.Content)
+			assert.NotContains(t, log.Other, "private_code")
+			first := log
+			formatUserLog(&log)
+			assert.Equal(t, first, log, "list and export formatting must preserve the error cause")
+		})
+	}
+	local := Log{Type: LogTypeError, Content: "Your site account balance is insufficient", Other: `{"error_type":"new_api_error","error_code":"insufficient_user_quota","status_code":402}`}
+	formatUserLog(&local)
+	assert.Equal(t, "Your site account balance is insufficient", local.Content)
+	assert.Contains(t, local.Other, "insufficient_user_quota")
 }
 
 // TestFormatUserLogsStripsQuotaSaturation verifies the admin-only quota

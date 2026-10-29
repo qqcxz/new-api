@@ -15,7 +15,8 @@ type GeneralSetting struct {
 	PingIntervalEnabled bool   `json:"ping_interval_enabled"`
 	PingIntervalSeconds int    `json:"ping_interval_seconds"`
 	// Only client-facing relay errors are replaced; retry decisions and admin logs keep the original error.
-	HideUpstreamError    bool   `json:"hide_upstream_error"`
+	HideUpstreamError bool `json:"hide_upstream_error"`
+	// Used only when no common error category can be identified.
 	UpstreamErrorMessage string `json:"upstream_error_message"`
 	// 当前站点额度展示类型：USD / CNY / TOKENS
 	QuotaDisplayType string `json:"quota_display_type"`
