@@ -4,10 +4,44 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUpstreamErrorPrivacyInLogViews(t *testing.T) {
+	settings := operation_setting.GetGeneralSetting()
+	previous := *settings
+	t.Cleanup(func() { *settings = previous })
+	settings.HideUpstreamError, settings.UpstreamErrorMessage = true, "Please retry"
+	original := Log{
+		Type: LogTypeError, Content: "PrivateProvider credit exhausted", RequestId: "local-request",
+		Other: `{"error_type":"PrivateProvider","error_code":"PrivateProvider_code","status_code":429,"request_path":"/v1/messages","content_parts":["PrivateProvider"],"admin_info":{"channel_name":"PrivateProvider"}}`,
+	}
+	userLog := original
+	formatUserLogs([]*Log{&userLog}, 0)
+	assert.Equal(t, "Please retry (request id: local-request)", userLog.Content)
+	assert.NotContains(t, userLog.Other, "PrivateProvider")
+	assert.JSONEq(t, `{"status_code":429,"request_path":"/v1/messages"}`, userLog.Other)
+	exportLog := original
+	formatUserLog(&exportLog)
+	assert.Equal(t, userLog.Content, exportLog.Content)
+	assert.Equal(t, userLog.Other, exportLog.Other)
+	adminLog := original
+	FormatAdminLogs([]*Log{&adminLog})
+	assert.Equal(t, original.Content, adminLog.Content)
+	assert.Contains(t, adminLog.Other, "PrivateProvider")
+	successLog := original
+	successLog.Type = LogTypeConsume
+	formatUserLog(&successLog)
+	assert.Equal(t, original.Content, successLog.Content)
+	settings.HideUpstreamError = false
+	visibleLog := original
+	formatUserLog(&visibleLog)
+	assert.Equal(t, original.Content, visibleLog.Content)
+	assert.Contains(t, visibleLog.Other, "PrivateProvider_code")
+}
 
 // TestFormatUserLogsStripsQuotaSaturation verifies the admin-only quota
 // saturation marker (nested under other.admin_info) is removed for non-admin

@@ -1,5 +1,10 @@
 {
   "translation": {
+    "Hide upstream error details": "隱藏上游錯誤詳情",
+    "Custom error message": "自訂錯誤提示",
+    "Leave blank to use the default service error message": "留空使用預設的服務錯誤提示",
+    "Replace provider errors returned to API clients. HTTP status codes, retries and administrator diagnostics are preserved. Disabled by default.": "替換傳回 API 用戶端的上游錯誤資訊，保留 HTTP 狀態碼、重試行為和管理員診斷資訊。預設關閉。",
+    "Applies when upstream error details are hidden. A local request ID is included for troubleshooting.": "僅在啟用隱藏上游錯誤詳情時生效，提示中會附帶本站請求 ID，方便排查。",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

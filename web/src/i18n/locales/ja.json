@@ -1,5 +1,10 @@
 {
   "translation": {
+    "Hide upstream error details": "上流のエラー詳細を非表示",
+    "Custom error message": "カスタムエラーメッセージ",
+    "Leave blank to use the default service error message": "空欄の場合は既定のサービスエラーメッセージを使用",
+    "Replace provider errors returned to API clients. HTTP status codes, retries and administrator diagnostics are preserved. Disabled by default.": "API クライアントに返すプロバイダーのエラーを置き換えます。HTTP ステータス、再試行、管理者向け診断情報は保持されます。既定では無効です。",
+    "Applies when upstream error details are hidden. A local request ID is included for troubleshooting.": "上流のエラー詳細が非表示の場合に適用されます。調査用にローカルのリクエスト ID が付加されます。",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

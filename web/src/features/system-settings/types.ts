@@ -361,6 +361,8 @@ export type OperationsSettings = {
   DefaultCollapseSidebar: boolean
   DemoSiteEnabled: boolean
   SelfUseModeEnabled: boolean
+  'general_setting.hide_upstream_error': boolean
+  'general_setting.upstream_error_message': string
   QuotaRemindEnabled: boolean
   QuotaRemindThreshold: string
   EmailProvider: 'smtp' | 'resend'

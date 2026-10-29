@@ -561,6 +561,45 @@ func TestResponsesWSInvalidRequestErrorUsesBadRequestStatus(t *testing.T) {
 	}
 }
 
+func TestResponsesWSIdleErrorPrivacy(t *testing.T) {
+	settings := operation_setting.GetGeneralSetting()
+	previous := *settings
+	t.Cleanup(func() { *settings = previous })
+	for _, hidden := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hidden=%t", hidden), func(t *testing.T) {
+			settings.HideUpstreamError, settings.UpstreamErrorMessage = hidden, "Please retry"
+			client, downstream, cleanupClient := newTestWebSocketPair(t)
+			target, upstream, cleanupTarget := newTestWebSocketPair(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			s := &responsesWSSession{ctx: ctx, cancel: cancel, client: downstream, target: target,
+				request: httptest.NewRequest(http.MethodGet, "/v1/responses", nil), requestID: "local-request"}
+			t.Cleanup(func() {
+				cancel()
+				cleanupTarget()
+				cleanupClient()
+				s.workers.Wait()
+			})
+			s.startTargetReader(target)
+			const original = `{"type":"error","error":{"message":"PrivateProvider failed","code":"PrivateProvider_code"}}`
+			require.NoError(t, upstream.WriteMessage(websocket.TextMessage, []byte(original)))
+			require.NoError(t, client.SetReadDeadline(time.Now().Add(3*time.Second)))
+			_, payload, err := client.ReadMessage()
+			require.NoError(t, err)
+			if hidden {
+				assert.NotContains(t, string(payload), "PrivateProvider")
+				assert.Contains(t, string(payload), "Please retry (request id: local-request)")
+			} else {
+				assert.Equal(t, original, string(payload))
+			}
+			const success = `{"type":"response.output_text.delta","delta":"Delivered text"}`
+			require.NoError(t, upstream.WriteMessage(websocket.TextMessage, []byte(success)))
+			_, payload, err = client.ReadMessage()
+			require.NoError(t, err)
+			assert.Equal(t, success, string(payload))
+		})
+	}
+}
+
 func newTestResponsesWSTarget(t *testing.T) (*websocket.Conn, func()) {
 	t.Helper()
 	target, _, cleanup := newTestWebSocketPair(t)

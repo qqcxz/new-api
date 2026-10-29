@@ -36,6 +36,12 @@ const OPERATIONS_SECTIONS = [
           DefaultCollapseSidebar: settings.DefaultCollapseSidebar,
           DemoSiteEnabled: settings.DemoSiteEnabled,
           SelfUseModeEnabled: settings.SelfUseModeEnabled,
+          general_setting: {
+            hide_upstream_error:
+              settings['general_setting.hide_upstream_error'] ?? false,
+            upstream_error_message:
+              settings['general_setting.upstream_error_message'] ?? '',
+          },
         }}
       />
     ),

@@ -1,5 +1,10 @@
 {
   "translation": {
+    "Hide upstream error details": "Ẩn chi tiết lỗi nhà cung cấp",
+    "Custom error message": "Thông báo lỗi tùy chỉnh",
+    "Leave blank to use the default service error message": "Để trống để dùng thông báo lỗi dịch vụ mặc định",
+    "Replace provider errors returned to API clients. HTTP status codes, retries and administrator diagnostics are preserved. Disabled by default.": "Thay thế lỗi nhà cung cấp trả về cho máy khách API. Giữ nguyên mã HTTP, cơ chế thử lại và thông tin chẩn đoán cho quản trị viên. Mặc định tắt.",
+    "Applies when upstream error details are hidden. A local request ID is included for troubleshooting.": "Áp dụng khi ẩn chi tiết lỗi. Kèm mã yêu cầu cục bộ để hỗ trợ chẩn đoán.",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

@@ -30,6 +30,8 @@ const defaultOperationsSettings: OperationsSettings = {
   DefaultCollapseSidebar: false,
   DemoSiteEnabled: false,
   SelfUseModeEnabled: false,
+  'general_setting.hide_upstream_error': false,
+  'general_setting.upstream_error_message': '',
   QuotaRemindEnabled: true,
   QuotaRemindThreshold: '',
   EmailProvider: 'smtp',

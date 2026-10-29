@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -113,10 +115,42 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
-		logs[i].ChannelName = ""
-		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityUser)
+		formatUserLog(logs[i])
 	}
 	assignDisplayLogIds(logs, startIdx)
+}
+
+// Apply the same privacy projection to list, token and export views. Stored
+// records and administrator views keep their original diagnostic information.
+func formatUserLog(log *Log) {
+	log.ChannelName = ""
+	log.Other = formatLogOtherJSON(log.Other, logOtherVisibilityUser)
+	settings := operation_setting.GetGeneralSetting()
+	if log.Type != LogTypeError || !settings.HideUpstreamError {
+		return
+	}
+	message := strings.TrimSpace(settings.UpstreamErrorMessage)
+	if message == "" {
+		message = i18n.Translate("", i18n.MsgRelayServiceError)
+	}
+	if log.RequestId != "" {
+		message = common.MessageWithRequestId(message, log.RequestId)
+	}
+	log.Content = message
+	// Error metadata can contain provider-specific codes or structured content.
+	// Keep only the operational fields needed by the user's log view.
+	var other map[string]common.RawMessage
+	if common.UnmarshalJsonStr(log.Other, &other) != nil {
+		log.Other = "{}"
+		return
+	}
+	public := make(map[string]any)
+	for _, key := range []string{"request_path", "status_code"} {
+		if value, ok := other[key]; ok {
+			public[key] = value
+		}
+	}
+	log.Other = common.MapToJsonStr(public)
 }
 
 // FormatAdminLogs removes root-only diagnostics while retaining operational
@@ -653,8 +687,7 @@ func StreamUserLogs(ctx context.Context, userId int, filter LogFilter, fn func(*
 	return streamLogs(tx, "logs.id desc", func(log *Log) error {
 		count++
 		log.Id = count
-		log.ChannelName = ""
-		log.Other = formatLogOtherJSON(log.Other, logOtherVisibilityUser)
+		formatUserLog(log)
 		return fn(log)
 	})
 }

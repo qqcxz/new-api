@@ -46,6 +46,9 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {
 		return
 	}
 
+	publicData := SanitizeUpstreamErrorPayload(c, data)
+	errorRewritten := !bytes.Equal(data, publicData)
+	data = publicData
 	body := io.NopCloser(bytes.NewBuffer(data))
 
 	// We shouldn't set the header before we parse the response body, because the parse part may fail.
@@ -55,6 +58,9 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {
 	if src != nil {
 		for k, v := range src.Header {
 			if !ShouldCopyUpstreamHeader(c, k, v) {
+				continue
+			}
+			if errorRewritten && !strings.EqualFold(k, "Content-Type") {
 				continue
 			}
 			c.Writer.Header().Set(k, v[0])

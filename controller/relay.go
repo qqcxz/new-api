@@ -94,27 +94,30 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			service.RecordRequestPolicyTermination(c, newAPIError)
 			logger.LogError(c, common.LogText("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
-			upstreamURLs := common.UpstreamAddresses(c)
 			if relayFormat != types.RelayFormatOpenAIRealtime && c.Writer.Written() &&
 				strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
 				writeRelayStreamError(c, relayFormat, newAPIError)
 				return
 			}
+			clientError := *service.ClientRelayError(c, newAPIError)
+			if clientError.Error() == newAPIError.Error() {
+				clientError.SetMessage(common.MessageWithRequestId(clientError.Error(), requestId))
+			}
+			upstreamURLs := common.UpstreamAddresses(c)
 			if relayFormat != types.RelayFormatOpenAIRealtime {
 				c.Header("Content-Type", "application/json; charset=utf-8")
 			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
-				helper.WssError(c, ws, newAPIError.ToOpenAIError(upstreamURLs...))
+				helper.WssError(c, ws, clientError.ToOpenAIError(upstreamURLs...))
 			case types.RelayFormatClaude:
-				c.JSON(newAPIError.StatusCode, gin.H{
+				c.JSON(clientError.StatusCode, gin.H{
 					"type":  "error",
-					"error": newAPIError.ToClaudeError(upstreamURLs...),
+					"error": clientError.ToClaudeError(upstreamURLs...),
 				})
 			default:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"error": newAPIError.ToOpenAIError(upstreamURLs...),
+				c.JSON(clientError.StatusCode, gin.H{
+					"error": clientError.ToOpenAIError(upstreamURLs...),
 				})
 			}
 		}
@@ -247,6 +250,13 @@ func writeRelayStreamError(c *gin.Context, format types.RelayFormat, apiError *t
 		common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, status)
 	}
 	status.MarkFailed(string(apiError.GetErrorCode()), string(apiError.GetErrorType()), apiError.StatusCode)
+	clientError := *service.ClientRelayError(c, apiError)
+	if clientError.Error() == apiError.Error() && c.GetString(common.RequestIdKey) != "" {
+		clientError.SetMessage(common.MessageWithRequestId(clientError.Error(), c.GetString(common.RequestIdKey)))
+	}
+	apiError = &clientError
+	c.Set("client_relay_error_prepared", true)
+	defer c.Set("client_relay_error_prepared", false)
 	upstreamURLs := common.UpstreamAddresses(c)
 	if format == types.RelayFormatClaude {
 		_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: apiError.ToClaudeError(upstreamURLs...)})
@@ -373,10 +383,14 @@ func RelayMidjourney(c *gin.Context) {
 			mjErr.Result = i18n.T(c, i18n.MsgRelayGroupSaturated)
 			statusCode = http.StatusTooManyRequests
 		}
+		description, errorType, errorCode := fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result), "upstream_error", mjErr.Code
+		if operation_setting.GetGeneralSetting().HideUpstreamError {
+			description, errorType, errorCode = service.PublicUpstreamError(c).Message, "api_error", 4
+		}
 		c.JSON(statusCode, gin.H{
-			"description": fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result),
-			"type":        "upstream_error",
-			"code":        mjErr.Code,
+			"description": description,
+			"type":        errorType,
+			"code":        errorCode,
 		})
 		channelId := c.GetInt("channel_id")
 		logger.LogError(c, common.LogText("relay error (channel #%d, status code %d): %s", channelId, statusCode, fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result)))
@@ -800,7 +814,7 @@ func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 	service.RecordRequestPolicyTermination(c, taskSubmissionAPIError(taskErr))
 	newTaskPluginSubmitDiagnostics(c).presentError(taskErr)
-	if middleware.RespondTaskPluginError(c, taskErr) {
+	if middleware.RespondTaskPluginError(c, service.ClientTaskError(c, taskErr)) {
 		return
 	}
 	respondTaskError(c, taskErr)
@@ -808,10 +822,11 @@ func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 
 // respondTaskError 统一输出 Task 错误响应（含 429 限流提示改写）
 func respondTaskError(c *gin.Context, taskErr *taskdto.TaskError) {
-	if taskErr.StatusCode == http.StatusTooManyRequests {
-		taskErr.Message = i18n.T(c, i18n.MsgRelayGroupUpstreamSaturated)
+	clientErr := *service.ClientTaskError(c, taskErr)
+	if clientErr.StatusCode == http.StatusTooManyRequests && (!operation_setting.GetGeneralSetting().HideUpstreamError || taskErr.LocalError) {
+		clientErr.Message = i18n.T(c, i18n.MsgRelayGroupUpstreamSaturated)
 	}
-	c.JSON(taskErr.StatusCode, taskErr)
+	c.JSON(clientErr.StatusCode, clientErr)
 }
 
 // taskSubmissionAPIError adapts a task error for the shared relay error paths.

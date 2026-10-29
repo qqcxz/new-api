@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
 
@@ -26,8 +26,10 @@ import {
   FormControl,
   FormDescription,
   FormField,
+  FormItem,
   FormLabel,
 } from '@/components/ui/form'
+import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 
 import {
@@ -44,6 +46,10 @@ const behaviorSchema = z.object({
   DefaultCollapseSidebar: z.boolean(),
   DemoSiteEnabled: z.boolean(),
   SelfUseModeEnabled: z.boolean(),
+  general_setting: z.object({
+    hide_upstream_error: z.boolean(),
+    upstream_error_message: z.string(),
+  }),
 })
 
 type BehaviorFormValues = z.infer<typeof behaviorSchema>
@@ -64,10 +70,32 @@ export function SystemBehaviorSection({
   })
 
   useResetForm(form, defaultValues)
+  const hideUpstreamError = useWatch({
+    control: form.control,
+    name: 'general_setting.hide_upstream_error',
+  })
 
   const onSubmit = async (data: BehaviorFormValues) => {
-    const updates = Object.entries(data).filter(
-      ([key, value]) => value !== defaultValues[key as keyof BehaviorFormValues]
+    const values = {
+      DefaultCollapseSidebar: data.DefaultCollapseSidebar,
+      DemoSiteEnabled: data.DemoSiteEnabled,
+      SelfUseModeEnabled: data.SelfUseModeEnabled,
+      'general_setting.upstream_error_message':
+        data.general_setting.upstream_error_message,
+      'general_setting.hide_upstream_error':
+        data.general_setting.hide_upstream_error,
+    }
+    const previous = {
+      DefaultCollapseSidebar: defaultValues.DefaultCollapseSidebar,
+      DemoSiteEnabled: defaultValues.DemoSiteEnabled,
+      SelfUseModeEnabled: defaultValues.SelfUseModeEnabled,
+      'general_setting.upstream_error_message':
+        defaultValues.general_setting.upstream_error_message,
+      'general_setting.hide_upstream_error':
+        defaultValues.general_setting.hide_upstream_error,
+    }
+    const updates = Object.entries(values).filter(
+      ([key, value]) => value !== previous[key as keyof typeof previous]
     )
 
     for (const [key, value] of updates) {
@@ -143,6 +171,51 @@ export function SystemBehaviorSection({
                   />
                 </FormControl>
               </SettingsSwitchItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='general_setting.hide_upstream_error'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Hide upstream error details')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Replace provider errors returned to API clients. HTTP status codes, retries and administrator diagnostics are preserved. Disabled by default.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </SettingsSwitchItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='general_setting.upstream_error_message'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Custom error message')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    disabled={!hideUpstreamError}
+                    placeholder={t(
+                      'Leave blank to use the default service error message'
+                    )}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Applies when upstream error details are hidden. A local request ID is included for troubleshooting.'
+                  )}
+                </FormDescription>
+              </FormItem>
             )}
           />
         </SettingsForm>

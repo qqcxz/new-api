@@ -1,5 +1,10 @@
 {
   "translation": {
+    "Hide upstream error details": "Скрывать подробности ошибок провайдера",
+    "Custom error message": "Собственный текст ошибки",
+    "Leave blank to use the default service error message": "Оставьте пустым для стандартного сообщения об ошибке",
+    "Replace provider errors returned to API clients. HTTP status codes, retries and administrator diagnostics are preserved. Disabled by default.": "Заменяет ошибки провайдера в ответах клиентам API. Коды HTTP, повторные попытки и диагностика администратора сохраняются. По умолчанию отключено.",
+    "Applies when upstream error details are hidden. A local request ID is included for troubleshooting.": "Действует при скрытии подробностей ошибок. Для диагностики добавляется локальный идентификатор запроса.",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

@@ -17,6 +17,7 @@ import (
 	appconstant "github.com/QuantumNous/new-api/constant"
 	appdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	appmodel "github.com/QuantumNous/new-api/model"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
@@ -230,7 +231,10 @@ func (s *responsesWSSession) runRequest(state *responsesWSCallState, message []b
 		c.Request.ContentLength = int64(len(create.Body))
 		callErr := s.runCall(c, state, create)
 		upstreamURLs = common.UpstreamAddresses(c)
-		return callErr
+		if callErr != nil {
+			logger.LogError(c, common.LogText("responses websocket relay error: %s", common.LocalLogPreview(callErr.MaskSensitiveError(upstreamURLs...))))
+		}
+		return service.ClientRelayError(c, callErr)
 	})
 	if apiErr != nil && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
 		state.closeCode = websocket.ClosePolicyViolation
@@ -403,7 +407,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				info.StreamStatus.RecordError("invalid upstream websocket event")
 			} else {
 				if event.Type != "error" && event.StreamID != "" && event.StreamID != create.StreamID {
-					if err := s.writeClient(incoming.kind, incoming.body); err != nil {
+					if err := s.writeClient(incoming.kind, service.SanitizeUpstreamErrorPayload(c, incoming.body)); err != nil {
 						s.shutdown(websocket.CloseInternalServerErr, "")
 					}
 					continue
@@ -421,7 +425,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 					}
 					terminal, ambiguous, controlError := responsesWSErrorEndsRequest(rejection, create.StreamID, responseID, sentControl)
 					if !terminal {
-						if err := s.writeClient(incoming.kind, incoming.body); err != nil {
+						if err := s.writeClient(incoming.kind, service.SanitizeUpstreamErrorPayload(c, incoming.body)); err != nil {
 							s.shutdown(websocket.CloseInternalServerErr, "")
 						}
 						// Only a control error in this stream resolves its pending control.
@@ -441,7 +445,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 						accumulator.Observe(&event.ResponsesStreamResponse, incoming.body)
 						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 						s.lastResponseID = responseID
-						state.terminal = &incoming
+						state.terminal = &responsesWSMessage{kind: incoming.kind, body: service.SanitizeUpstreamErrorPayload(c, incoming.body)}
 						if ambiguous {
 							state.closeCode = websocket.CloseInternalServerErr
 						}
@@ -477,11 +481,11 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 					s.lastResponseID = event.Response.ID
 				}
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
-				state.terminal = &incoming
+				state.terminal = &responsesWSMessage{kind: incoming.kind, body: service.SanitizeUpstreamErrorPayload(c, incoming.body)}
 				ConsumeResponsesQuota(c, info, accumulator.Finish())
 				return nil
 			}
-			if err := s.writeClient(incoming.kind, incoming.body); err != nil {
+			if err := s.writeClient(incoming.kind, service.SanitizeUpstreamErrorPayload(c, incoming.body)); err != nil {
 				s.shutdown(websocket.CloseInternalServerErr, "")
 			}
 			if accepted && pendingControl != nil {
@@ -662,7 +666,9 @@ func (s *responsesWSSession) startTargetReader(target *websocket.Conn) {
 				s.shutdown(code, "upstream connection closed")
 				return
 			}
-			if writeErr := s.writeClient(kind, body); writeErr != nil {
+			idleContext := &gin.Context{Request: s.request}
+			idleContext.Set(common.RequestIdKey, s.requestID)
+			if writeErr := s.writeClient(kind, service.SanitizeUpstreamErrorPayload(idleContext, body)); writeErr != nil {
 				s.shutdown(websocket.CloseInternalServerErr, "")
 				return
 			}

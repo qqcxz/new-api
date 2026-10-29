@@ -14,6 +14,9 @@ type GeneralSetting struct {
 	DocsLink            string `json:"docs_link"`
 	PingIntervalEnabled bool   `json:"ping_interval_enabled"`
 	PingIntervalSeconds int    `json:"ping_interval_seconds"`
+	// Only client-facing relay errors are replaced; retry decisions and admin logs keep the original error.
+	HideUpstreamError    bool   `json:"hide_upstream_error"`
+	UpstreamErrorMessage string `json:"upstream_error_message"`
 	// 当前站点额度展示类型：USD / CNY / TOKENS
 	QuotaDisplayType string `json:"quota_display_type"`
 	// 自定义货币符号，用于 CUSTOM 展示类型

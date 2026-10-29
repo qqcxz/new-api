@@ -1,5 +1,10 @@
 {
   "translation": {
+    "Hide upstream error details": "Hide upstream error details",
+    "Custom error message": "Custom error message",
+    "Leave blank to use the default service error message": "Leave blank to use the default service error message",
+    "Replace provider errors returned to API clients. HTTP status codes, retries and administrator diagnostics are preserved. Disabled by default.": "Replace provider errors returned to API clients. HTTP status codes, retries and administrator diagnostics are preserved. Disabled by default.",
+    "Applies when upstream error details are hidden. A local request ID is included for troubleshooting.": "Applies when upstream error details are hidden. A local request ID is included for troubleshooting.",
     "360": "360",
     "1000": "1000",
     "10000": "10000",
