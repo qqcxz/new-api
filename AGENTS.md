@@ -2,6 +2,15 @@
 
 DO NOT send optional commentary
 
+## Fork Development Workflow
+
+- This fork uses `feat/custom-development` as its single long-lived branch for all custom features and fixes. Do not create a new feature branch or switch to `dev` for each request unless the user explicitly asks.
+- Inspect `git status` before editing. Preserve existing uncommitted work; do not reset, stash, or move it between branches automatically. If this working copy is on another branch, inspect the state before switching to the fixed development branch.
+- Keep `main` as the official baseline and `dev` as the maintenance preparation baseline. Daily custom development stays on `feat/custom-development`.
+- When committing is requested, use focused commits for separate features, even though they share one branch. Do not push without authorization.
+- Official updates may use temporary `sync/upstream-*` branches when the user requests upstream synchronization. Use `node fork/maintain.mjs sync`, validate the merge, then return the merged history to `feat/custom-development`. Preserve upstream ancestry; do not squash or rebase upstream sync merges.
+- See `fork/README.zh-CN.md` for the fixed-branch workflow and the copyable Agent task template.
+
 ## Overview
 
 This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI providers (OpenAI, Claude, Gemini, Azure, AWS Bedrock, etc.) behind a unified API, with user management, billing, rate limiting, and an admin dashboard.

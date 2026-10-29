@@ -15,6 +15,7 @@ on:
 jobs:
   build_single_arch:
     name: Build & push (${{ matrix.arch }})
+    if: github.repository == 'QuantumNous/new-api'
     strategy:
       fail-fast: false
       matrix:
