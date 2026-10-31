@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -68,7 +69,7 @@ func (a *ResponsesUsageAccumulator) Observe(event *dto.ResponsesStreamResponse, 
 		if event.Response != nil {
 			for i := range event.Response.Output {
 				output := &event.Response.Output[i]
-				if output.Type != "message" || len(output.Content) > 0 {
+				if responsesOutputHasGeneratedContent(output) {
 					a.info.StreamStatus.ObserveAccounting(true, false, false)
 				}
 				a.imageCounter.Observe(output, &i)
@@ -78,13 +79,13 @@ func (a *ResponsesUsageAccumulator) Observe(event *dto.ResponsesStreamResponse, 
 		a.imageCommitted = true
 	case "response.output_text.delta", "response.function_call_arguments.delta",
 		"response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.refusal.delta":
-		// Every delta kind here is generated output that upstream bills as
-		// output tokens, so all of them feed the missing-usage estimate.
+		// Retain whitespace for accurate estimates once real output arrives,
+		// but a blank placeholder alone must not defeat a failure waiver.
 		a.outputText.WriteString(event.Delta)
-		a.info.StreamStatus.ObserveAccounting(event.Delta != "", false, false)
+		a.info.StreamStatus.ObserveAccounting(strings.TrimSpace(event.Delta) != "", false, false)
 	case "response.custom_tool_call_input.delta":
 		a.outputText.WriteString(event.Delta)
-		a.info.StreamStatus.ObserveAccounting(event.Delta != "", false, false)
+		a.info.StreamStatus.ObserveAccounting(strings.TrimSpace(event.Delta) != "", false, false)
 	case "response.audio.delta", "response.output_audio.delta":
 		// Audio bytes prove generated work, but are not text token estimates.
 		a.info.StreamStatus.ObserveAccounting(event.Delta != "", false, false)
@@ -94,7 +95,7 @@ func (a *ResponsesUsageAccumulator) Observe(event *dto.ResponsesStreamResponse, 
 		if event.Item == nil {
 			return
 		}
-		if event.Item.Type != "message" || len(event.Item.Content) > 0 {
+		if responsesOutputHasGeneratedContent(event.Item) {
 			// Tool and reasoning items are work even when they contain no text.
 			a.info.StreamStatus.ObserveAccounting(true, false, false)
 		}
@@ -112,6 +113,15 @@ func (a *ResponsesUsageAccumulator) Observe(event *dto.ResponsesStreamResponse, 
 	}
 }
 
+func responsesOutputHasGeneratedContent(output *dto.ResponsesOutput) bool {
+	if output.Type != "message" {
+		return true
+	}
+	return slices.ContainsFunc(output.Content, func(part dto.ResponsesOutputContent) bool {
+		return part.Type != "output_text" || strings.TrimSpace(part.Text) != ""
+	})
+}
+
 func (a *ResponsesUsageAccumulator) Finish() *dto.Usage {
 	if a.finished {
 		return a.usage
@@ -124,7 +134,8 @@ func (a *ResponsesUsageAccumulator) Finish() *dto.Usage {
 		a.imageCommitted = true
 	}
 	if a.usage.CompletionTokens == 0 {
-		if output := a.outputText.String(); output != "" {
+		if output := a.outputText.String(); output != "" &&
+			(!a.info.StreamStatus.ResponseFailed() || strings.TrimSpace(output) != "") {
 			a.usage.CompletionTokens = tokenkit.Count(a.info.GetUpstreamModelName(), output)
 			a.info.StreamStatus.ObserveAccounting(true, false, true)
 		}

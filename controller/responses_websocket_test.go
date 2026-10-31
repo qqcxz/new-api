@@ -881,7 +881,8 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 			// sseTerminal is the flat error envelope used by the Responses SSE
 			// protocol; the WebSocket protocol nests the error instead.
 			sseTerminal string
-			delta       bool
+			delta       string
+			outputItem  string
 			failed      bool
 			ignored     bool
 			wantQuota   int
@@ -889,16 +890,25 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 			{name: "failed-null-fixed", expression: `tier("request", fixed(0.002))`, terminal: `{"type":"response.failed","response":{"id":"first","status":"failed","usage":null,"error":{"code":"server_error","message":"sensitive upstream detail"}}}`, failed: true, wantQuota: 0},
 			{name: "failed-missing-fixed", expression: `tier("request", fixed(0.002))`, terminal: `{"type":"response.failed","response":{"id":"first","status":"failed"}}`, failed: true, wantQuota: 0},
 			{name: "failed-actual-usage", expression: `tier("input", p * 2)`, terminal: `{"type":"response.failed","response":{"id":"first","status":"failed","usage":{"input_tokens":1000,"output_tokens":10,"total_tokens":1010}}}`, failed: true, wantQuota: 1000},
-			{name: "failed-estimated-output", expression: `tier("output", c * 2000)`, terminal: `{"type":"response.failed","response":{"id":"first","status":"failed","usage":null}}`, delta: true, failed: true, wantQuota: 1000},
+			{name: "failed-estimated-output", expression: `tier("output", c * 2000)`, terminal: `{"type":"response.failed","response":{"id":"first","status":"failed","usage":null}}`, delta: "hello", failed: true, wantQuota: 1000},
+			{name: "failed-whitespace-placeholder", expression: `tier("request", fixed(0.002))`, terminal: `{"type":"response.failed","response":{"id":"first","status":"failed","error":{"type":"permission_error","code":"prompt_guard_blocked","message":"Request rejected"}}}`, delta: "\n", failed: true, wantQuota: 0},
+			{name: "failed-empty-message-placeholder", expression: `tier("request", fixed(0.002))`, terminal: `{"type":"response.failed","response":{"id":"first","status":"failed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":" \n"}]}]}}`, outputItem: `{"type":"message","role":"assistant","content":[{"type":"output_text","text":""}]}`, failed: true, wantQuota: 0},
+			{name: "failed-whitespace-with-reported-usage", expression: `tier("input", p * 2)`, terminal: `{"type":"response.failed","response":{"id":"first","status":"failed","usage":{"input_tokens":1000,"output_tokens":1,"total_tokens":1001}}}`, delta: "\n", failed: true, wantQuota: 1000},
 			{name: "error-after-created", expression: `tier("request", fixed(0.002))`, terminal: `{"type":"error","status":500,"error":{"type":"server_error","code":"server_error","message":"Internal server error"}}`, sseTerminal: `{"type":"error","code":"server_error","message":"Internal server error","param":null,"sequence_number":2}`, failed: true, wantQuota: 0},
 			{name: "business-error-after-created", expression: `tier("request", fixed(0.002))`, terminal: `{"type":"error","status":400,"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Input too long"}}`, sseTerminal: `{"type":"error","code":"context_length_exceeded","message":"Input too long","param":null,"sequence_number":2}`, failed: true, ignored: true, wantQuota: 0},
 			{name: "completed-at-output-limit", expression: `tier("request", fixed(0.002))`, terminal: `{"type":"response.incomplete","response":{"id":"first","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1000,"output_tokens":1,"total_tokens":1001}}}`, wantQuota: 1000},
 			{name: "completed-zero-fixed", expression: `tier("request", fixed(0.002))`, terminal: `{"type":"response.completed","response":{"id":"first","status":"completed","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`, wantQuota: 1000},
+			{name: "completed-whitespace-fixed", expression: `tier("request", fixed(0.002))`, terminal: `{"type":"response.completed","response":{"id":"first","status":"completed"}}`, delta: "\n", wantQuota: 1000},
 		} {
 			t.Run(transport+"/"+tc.name, func(t *testing.T) {
 				events := []string{`{"type":"response.created","response":{"id":"first","status":"in_progress"}}`}
-				if tc.delta {
-					events = append(events, `{"type":"response.output_text.delta","delta":"hello"}`)
+				if tc.outputItem != "" {
+					events = append(events, `{"type":"response.output_item.added","output_index":0,"item":`+tc.outputItem+`}`)
+				}
+				if tc.delta != "" {
+					payload, err := common.Marshal(map[string]any{"type": "response.output_text.delta", "delta": tc.delta})
+					require.NoError(t, err)
+					events = append(events, string(payload))
 				}
 				terminal := tc.terminal
 				if transport == "http-sse" && tc.sseTerminal != "" {
@@ -988,6 +998,8 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 				}
 				if tc.wantQuota == 0 {
 					assert.Equal(t, map[string]any{"action": "waived", "reason": "failed_without_output_or_usage"}, other["billing_decision"])
+					assert.Zero(t, logs[0].PromptTokens)
+					assert.Zero(t, logs[0].CompletionTokens)
 				} else {
 					assert.NotContains(t, other, "billing_decision")
 				}
