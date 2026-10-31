@@ -27,6 +27,7 @@ services:
       TZ: Asia/Shanghai
       NODE_NAME: new-api-custom-1
       DEFAULT_LANGUAGE: zh-CN
+      ERROR_LOG_ENABLED: '${ERROR_LOG_ENABLED:-true}'
     depends_on:
       postgres:
         condition: service_healthy
